@@ -216,13 +216,6 @@ export class GameService {
       turnOrder,
     ]);
 
-    await pool.query(
-      `UPDATE number_rounds
-       SET active_responder_index = active_responder_index + 1
-       WHERE game_round_id = $1`,
-      [roundId]
-    );
-
     return result.rows[0];
   }
 

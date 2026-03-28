@@ -19,5 +19,8 @@
     "cap:sync": "npm run cap:sync --workspace=frontend",
     "cap:build:ios": "npm run cap:build:ios --workspace=frontend",
     "cap:build:android": "npm run cap:build:android --workspace=frontend"
+  },
+  "devDependencies": {
+    "typescript": "^4.9.5"
   }
 }

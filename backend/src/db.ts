@@ -130,10 +130,11 @@ export async function initDB() {
         clue_text VARCHAR(500) NOT NULL,
         turn_order INT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE (game_round_id, responder_user_id)
+        UNIQUE (game_round_id, turn_order)
       );
 
       ALTER TABLE games ADD COLUMN IF NOT EXISTS game_type VARCHAR(50) DEFAULT 'guess_person';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(255);
       ALTER TABLE games ADD COLUMN IF NOT EXISTS is_team_mode BOOLEAN DEFAULT FALSE;
       ALTER TABLE games ADD COLUMN IF NOT EXISTS total_rounds INT DEFAULT 3;
       ALTER TABLE games ADD COLUMN IF NOT EXISTS current_round INT DEFAULT 1;
@@ -159,6 +160,19 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_game_rounds_game_type ON game_rounds(game_type);
       CREATE INDEX IF NOT EXISTS idx_questions_round_id ON questions(game_round_id);
       CREATE INDEX IF NOT EXISTS idx_number_round_clues_round_id ON number_round_clues(game_round_id);
+
+      CREATE TABLE IF NOT EXISTS custom_categories (
+        id UUID PRIMARY KEY,
+        prompt VARCHAR(255) NOT NULL,
+        examples TEXT[] NOT NULL DEFAULT '{}',
+        usage_count INT DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_categories_prompt ON custom_categories(LOWER(prompt));
+
+      -- Allow same responder to submit multiple clues per round (3-slot model)
+      ALTER TABLE number_round_clues DROP CONSTRAINT IF EXISTS number_round_clues_game_round_id_responder_user_id_key;
     `);
     console.log('✅ Database initialized successfully');
   } catch (err) {

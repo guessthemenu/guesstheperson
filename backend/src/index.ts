@@ -3,7 +3,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { initDB } from './db';
+import { initDB, pool } from './db';
 import { setupSocketHandlers } from './socket';
 
 dotenv.config();
@@ -26,6 +26,19 @@ app.use(express.json());
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
+});
+
+// Fetch custom categories contributed by players
+app.get('/api/categories', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT prompt, examples FROM custom_categories ORDER BY usage_count DESC, created_at DESC'
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching custom categories:', err);
+    res.json([]);
+  }
 });
 
 // Initialize database
