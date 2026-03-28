@@ -290,21 +290,6 @@ REACT_APP_ENVIRONMENT=development
 - `user_ids` (UUID[]) - Array of user IDs who have this contact
 - `created_at` (TIMESTAMP)
 
-## Next Steps
-
-- [ ] Connect frontend components to Socket.io events
-- [ ] Implement game lobby UI (player selection, team assignment)
-- [ ] Add QR code generation and scanning
-- [ ] Implement real-time question display UI
-- [ ] Add name blur animation during guessing
-- [ ] Test Socket.io real-time communication end-to-end
-- [ ] Add contact import UI for web fallback
-- [ ] Build iOS and Android apps with Capacitor
-- [ ] Deploy to staging environment
-- [ ] Add authentication (optional)
-- [ ] Add game replay feature
-- [ ] Add achievement badges
-
 ## Contributing
 
 Feel free to submit issues and enhancement requests!
