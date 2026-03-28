@@ -1,11 +1,11 @@
-# GuessThePerson 🎮
+# GuessThePerson 
 
-A multiplayer **Guess Who** style game where players use their phone contacts to play with friends. Import your contacts, create a game room, and guess mutual connections with yes/no questions!
+A multiplayer **Guess Who** style game where players use their phone contacts to guess mutual connections with a series of yes/no questions
 
 ## Features
 
 - 📱 **Native Contact Import** - Access phone contacts on iOS/Android
-- 🎮 **Real-time Multiplayer** - Play with friends via Socket.io
+- 🎮 **Real-time Multiplayer** - Play with friends 
 - 📍 **Mutual Contacts Only** - Game database created from common contacts
 - ⏱️ **Question Counter** - Track questions asked with a visual timer
 - 👥 **Team Mode** - Play with teammates, combined scores
@@ -297,7 +297,6 @@ REACT_APP_ENVIRONMENT=development
 - [ ] Add QR code generation and scanning
 - [ ] Implement real-time question display UI
 - [ ] Add name blur animation during guessing
-- [ ] Create leaderboard component
 - [ ] Test Socket.io real-time communication end-to-end
 - [ ] Add contact import UI for web fallback
 - [ ] Build iOS and Android apps with Capacitor
