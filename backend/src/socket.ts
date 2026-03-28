@@ -180,6 +180,7 @@ export function setupSocketHandlers(io: Server) {
         }
 
         currentUser = await upsertUser(data.username);
+        socket.join(currentUser.id);
         await replaceContacts(currentUser.id, data.contacts || []);
 
         socket.emit('user-created', { userId: currentUser.id, username: currentUser.username });
@@ -312,6 +313,8 @@ export function setupSocketHandlers(io: Server) {
           data.guesserUserId
         );
 
+        io.in(getGameRoom(data.gameId)).socketsJoin(`round-${round.id}`);
+
         // Get guesser info without revealing target name
         const guesserQuery = `SELECT username FROM users WHERE id = $1`;
         const guesserResult = await pool.query(guesserQuery, [data.guesserUserId]);
@@ -326,9 +329,10 @@ export function setupSocketHandlers(io: Server) {
         });
 
         // Send target name only to the guesser
-        socket
-          .to(data.guesserUserId)
-          .emit('your-target', { targetName: data.targetContact, roundId: round.id });
+        io.to(data.guesserUserId).emit('your-target', {
+          targetName: data.targetContact,
+          roundId: round.id,
+        });
       } catch (err) {
         console.error('Error in start-round:', err);
         socket.emit('error', { message: 'Failed to start round' });
@@ -340,7 +344,7 @@ export function setupSocketHandlers(io: Server) {
       try {
         if (!currentUser) throw new Error('User not authenticated');
 
-        const question = await gameService.recordQuestion(
+        await gameService.recordQuestion(
           data.roundId,
           currentUser.id,
           data.questionNumber,
