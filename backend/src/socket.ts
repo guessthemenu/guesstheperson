@@ -1,7 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from './db';
-import { gameService } from './gameService';
+import { gameService, GameType } from './gameService';
 
 type ContactInput = {
   name?: string;
@@ -17,10 +17,35 @@ type CurrentUser = {
   username: string;
 };
 
+type NumberCategorySuggestion = {
+  prompt: string;
+  examples: string[];
+};
+
 const connectedUsersByGame = new Map<string, Set<string>>();
+const NUMBER_CATEGORY_SUGGESTIONS: NumberCategorySuggestion[] = [
+  { prompt: 'Cars', examples: ['shopping trolley', 'reliable hatchback', 'Ferrari'] },
+  { prompt: 'Holiday energy', examples: ['missed the flight', 'city break', 'private island'] },
+  { prompt: 'Restaurant vibe', examples: ['microwave chips', 'solid local bistro', 'impossible reservation'] },
+  { prompt: 'Hangover severity', examples: ['fresh as rain', 'need chips', 'seeing God'] },
+  { prompt: 'Office productivity', examples: ['asleep at desk', 'getting through emails', 'CEO on launch day'] },
+  { prompt: 'Footballer ability', examples: ['Sunday league bench', 'Championship starter', 'Ballon dOr'] },
+  { prompt: 'House party status', examples: ['everyone left', 'good playlist', 'legendary'] },
+  { prompt: 'Fashion choice', examples: ['bin bag', 'safe smart casual', 'runway menace'] },
+  { prompt: 'Weather drama', examples: ['barely a drizzle', 'proper storm', 'end times'] },
+  { prompt: 'Kebab quality', examples: ['regret', '2am dependable', 'worth travelling for'] },
+  { prompt: 'Pet chaos', examples: ['sleepy goldfish', 'cheeky terrier', 'escaped zoo animal'] },
+  { prompt: 'DJ set', examples: ['Bluetooth glitch', 'wedding dancefloor', 'headline festival set'] },
+];
 
 function getGameRoom(gameId: string) {
   return `game-${gameId}`;
+}
+
+function pickRandomItems<T>(items: T[], count: number) {
+  return [...items]
+    .sort(() => Math.random() - 0.5)
+    .slice(0, Math.min(count, items.length));
 }
 
 function markUserPresence(gameId: string, userId: string, isConnected: boolean) {
@@ -56,7 +81,7 @@ function getContactName(contact: ContactInput) {
 
 async function emitLobbyState(io: Server, gameId: string) {
   const gameQuery = `
-    SELECT id, host_id, is_team_mode, total_rounds, status
+    SELECT id, host_id, game_type, is_team_mode, total_rounds, status
     FROM games
     WHERE id = $1
   `;
@@ -90,11 +115,43 @@ async function emitLobbyState(io: Server, gameId: string) {
   io.to(getGameRoom(gameId)).emit('lobby-updated', {
     gameId: game.id,
     hostId: game.host_id,
+    gameType: game.game_type,
     isTeamMode: game.is_team_mode,
     totalRounds: game.total_rounds,
     status: game.status,
     players,
   });
+}
+
+async function getGameDetails(gameId: string) {
+  const result = await pool.query(
+    `SELECT id, host_id, game_type, is_team_mode, total_rounds, status
+     FROM games
+     WHERE id = $1`,
+    [gameId]
+  );
+  return result.rows[0] as
+    | {
+        id: string;
+        host_id: string;
+        game_type: GameType;
+        is_team_mode: boolean;
+        total_rounds: number;
+        status: string;
+      }
+    | undefined;
+}
+
+async function getNumberResponders(gameId: string, guesserUserId: string) {
+  const query = `
+    SELECT gp.user_id, u.username
+    FROM game_players gp
+    JOIN users u ON u.id = gp.user_id
+    WHERE gp.game_id = $1 AND gp.user_id <> $2
+    ORDER BY gp.joined_at ASC;
+  `;
+  const result = await pool.query(query, [gameId, guesserUserId]);
+  return result.rows as Array<{ user_id: string; username: string }>;
 }
 
 export function setupSocketHandlers(io: Server) {
@@ -140,11 +197,7 @@ export function setupSocketHandlers(io: Server) {
         throw new Error('User not authenticated');
       }
 
-      const gameResult = await pool.query(
-        'SELECT id, host_id, is_team_mode, total_rounds, status FROM games WHERE id = $1',
-        [gameId]
-      );
-      const game = gameResult.rows[0];
+      const game = await getGameDetails(gameId);
 
       if (!game) {
         throw new Error('Game not found');
@@ -164,6 +217,7 @@ export function setupSocketHandlers(io: Server) {
       socket.emit('lobby-joined', {
         gameId: game.id,
         hostId: game.host_id,
+        gameType: game.game_type,
         isTeamMode: game.is_team_mode,
         totalRounds: game.total_rounds,
         status: game.status,
@@ -213,11 +267,12 @@ export function setupSocketHandlers(io: Server) {
     });
 
     // Host creates game
-    socket.on('create-game', async (data: { isTeamMode: boolean; totalRounds: number; playerIds?: string[] }) => {
+    socket.on('create-game', async (data: { gameType?: GameType; isTeamMode: boolean; totalRounds: number; playerIds?: string[] }) => {
       try {
         if (!currentUser) throw new Error('User not authenticated');
 
         const game = await gameService.createGame(currentUser.id, {
+          gameType: data.gameType || 'guess_person',
           isTeamMode: data.isTeamMode,
           totalRounds: data.totalRounds,
           playerIds: data.playerIds || [currentUser.id],
@@ -241,6 +296,7 @@ export function setupSocketHandlers(io: Server) {
         socket.emit('game-created', {
           gameId: game.id,
           hostId: currentUser.id,
+          gameType: game.game_type,
           isTeamMode: data.isTeamMode,
         });
 
@@ -256,8 +312,7 @@ export function setupSocketHandlers(io: Server) {
       try {
         if (!currentUser) throw new Error('User not authenticated');
 
-        const gameResult = await pool.query('SELECT host_id FROM games WHERE id = $1', [data.gameId]);
-        const gameRow = gameResult.rows[0];
+        const gameRow = await getGameDetails(data.gameId);
 
         if (!gameRow) {
           throw new Error('Game not found');
@@ -275,26 +330,35 @@ export function setupSocketHandlers(io: Server) {
           await gameService.createTeams(data.gameId, data.teamAssignments);
         }
 
-        // Find mutual contacts
         const players = await gameService.getGamePlayers(data.gameId);
-        const playerIds = players.map((p) => p.user_id);
 
-        const query = `
-          SELECT name, array_agg(DISTINCT user_id) as users
-          FROM contacts
-          WHERE user_id = ANY($1)
-          GROUP BY name
-          HAVING COUNT(DISTINCT user_id) > 1
-          ORDER BY RANDOM()
-          LIMIT 10
-        `;
+        let mutualContacts: Array<{ name: string; users: string[] }> = [];
+        let categorySuggestions: NumberCategorySuggestion[] = [];
 
-        const result = await pool.query(query, [playerIds]);
-        const mutualContacts = result.rows;
+        if (game.game_type === 'guess_person') {
+          const playerIds = players.map((p) => p.user_id);
+          const query = `
+            SELECT name, array_agg(DISTINCT user_id) as users
+            FROM contacts
+            WHERE user_id = ANY($1)
+            GROUP BY name
+            HAVING COUNT(DISTINCT user_id) > 1
+            ORDER BY RANDOM()
+            LIMIT 10
+          `;
+
+          const result = await pool.query(query, [playerIds]);
+          mutualContacts = result.rows;
+        } else {
+          categorySuggestions = pickRandomItems(NUMBER_CATEGORY_SUGGESTIONS, 8);
+        }
 
         io.to(getGameRoom(data.gameId)).emit('game-started', {
           gameId: data.gameId,
+          gameType: game.game_type,
           mutualContacts,
+          categorySuggestions,
+          numberRange: { min: 0, max: 10 },
           players,
           isTeamMode: game.is_team_mode,
         });
@@ -305,15 +369,23 @@ export function setupSocketHandlers(io: Server) {
     });
 
     // Start round
-    socket.on('start-round', async (data: { gameId: string; targetContact: string; guesserUserId: string }) => {
+    socket.on('start-round', async (data: { gameId: string; targetContact?: string; guesserUserId: string }) => {
       try {
-        const round = await gameService.startRound(
-          data.gameId,
-          data.targetContact,
-          data.guesserUserId
-        );
+        const game = await getGameDetails(data.gameId);
+
+        if (!game) {
+          throw new Error('Game not found');
+        }
+
+        const secretNumber = Math.floor(Math.random() * 11);
+        const round = game.game_type === 'guess_person'
+          ? await gameService.startRound(data.gameId, data.targetContact || '', data.guesserUserId)
+          : await gameService.startNumberRound(data.gameId, data.guesserUserId, secretNumber);
 
         io.in(getGameRoom(data.gameId)).socketsJoin(`round-${round.id}`);
+        const responders = game.game_type === 'guess_number'
+          ? await getNumberResponders(data.gameId, data.guesserUserId)
+          : [];
 
         // Get guesser info without revealing target name
         const guesserQuery = `SELECT username FROM users WHERE id = $1`;
@@ -322,20 +394,78 @@ export function setupSocketHandlers(io: Server) {
 
         io.to(`game-${data.gameId}`).emit('round-started', {
           roundId: round.id,
+          gameType: game.game_type,
           guesserUserId: data.guesserUserId,
           guesserName,
           roundNumber: round.round_number,
-          // Only send target name to the person guessing
+          responderOrder: responders,
+          activeResponderUserId: responders[0]?.user_id || null,
+          suggestedCategories: game.game_type === 'guess_number' ? pickRandomItems(NUMBER_CATEGORY_SUGGESTIONS, 8) : [],
+          questionLimit: game.game_type === 'guess_number' ? 3 : 20,
         });
 
-        // Send target name only to the guesser
-        io.to(data.guesserUserId).emit('your-target', {
-          targetName: data.targetContact,
-          roundId: round.id,
-        });
+        if (game.game_type === 'guess_person') {
+          io.to(data.guesserUserId).emit('your-target', {
+            targetName: data.targetContact,
+            roundId: round.id,
+          });
+        } else {
+          responders.forEach((responder) => {
+            io.to(responder.user_id).emit('number-secret', {
+              roundId: round.id,
+              secretNumber,
+            });
+          });
+        }
       } catch (err) {
         console.error('Error in start-round:', err);
         socket.emit('error', { message: 'Failed to start round' });
+      }
+    });
+
+    socket.on('submit-number-clue', async (data: { gameId: string; roundId: string; promptText: string; clueText: string }) => {
+      try {
+        if (!currentUser) throw new Error('User not authenticated');
+
+        const roundQuery = `
+          SELECT gr.id, gr.game_id, gr.guesser_user_id, nr.active_responder_index
+          FROM game_rounds gr
+          JOIN number_rounds nr ON nr.game_round_id = gr.id
+          WHERE gr.id = $1 AND gr.game_type = 'guess_number'
+        `;
+        const roundResult = await pool.query(roundQuery, [data.roundId]);
+        const round = roundResult.rows[0];
+
+        if (!round) {
+          throw new Error('Number round not found');
+        }
+
+        const responders = await getNumberResponders(round.game_id, round.guesser_user_id);
+        const activeResponder = responders[round.active_responder_index];
+
+        if (!activeResponder || activeResponder.user_id !== currentUser.id) {
+          throw new Error('It is not your turn to submit a clue');
+        }
+
+        await gameService.recordNumberClue(
+          data.roundId,
+          currentUser.id,
+          data.promptText.trim(),
+          data.clueText.trim(),
+          round.active_responder_index + 1
+        );
+
+        const clueFeed = await gameService.getNumberRoundClues(data.roundId);
+        const nextResponder = responders[round.active_responder_index + 1] || null;
+
+        io.to(`round-${data.roundId}`).emit('number-clue-recorded', {
+          clues: clueFeed,
+          activeResponderUserId: nextResponder?.user_id || null,
+          cluePhaseComplete: !nextResponder,
+        });
+      } catch (err) {
+        console.error('Error in submit-number-clue:', err);
+        socket.emit('error', { message: err instanceof Error ? err.message : 'Failed to submit number clue' });
       }
     });
 
@@ -343,6 +473,14 @@ export function setupSocketHandlers(io: Server) {
     socket.on('ask-question', async (data: { roundId: string; questionNumber: number; questionText: string; answer: boolean }) => {
       try {
         if (!currentUser) throw new Error('User not authenticated');
+
+        const roundMetaQuery = `SELECT game_type, total_questions FROM game_rounds WHERE id = $1`;
+        const roundMetaResult = await pool.query(roundMetaQuery, [data.roundId]);
+        const roundMeta = roundMetaResult.rows[0];
+
+        if (roundMeta?.game_type === 'guess_number' && roundMeta.total_questions >= 3) {
+          throw new Error('Guess the Number rounds allow only three questions');
+        }
 
         await gameService.recordQuestion(
           data.roundId,
@@ -371,18 +509,30 @@ export function setupSocketHandlers(io: Server) {
         if (!currentUser) throw new Error('User not authenticated');
 
         // Get the target contact name
-        const roundQuery = `SELECT target_contact_name, guesser_user_id FROM game_rounds WHERE id = $1`;
+        const roundQuery = `
+          SELECT gr.target_contact_name, gr.guesser_user_id, gr.game_type, nr.secret_number
+          FROM game_rounds gr
+          LEFT JOIN number_rounds nr ON nr.game_round_id = gr.id
+          WHERE gr.id = $1
+        `;
         const roundResult = await pool.query(roundQuery, [data.roundId]);
         const roundData = roundResult.rows[0];
 
-        const isCorrect = data.guess.toLowerCase().trim() === roundData.target_contact_name.toLowerCase().trim();
+        const isNumberGame = roundData.game_type === 'guess_number';
+        const guessedNumber = Number.parseInt(data.guess, 10);
+        const isCorrect = isNumberGame
+          ? Number.isInteger(guessedNumber) && guessedNumber === roundData.secret_number
+          : data.guess.toLowerCase().trim() === roundData.target_contact_name.toLowerCase().trim();
 
         await gameService.recordGuess(data.roundId, data.guess, isCorrect);
 
         io.to(getGameRoom(data.gameId)).emit('guess-result', {
+          gameType: roundData.game_type,
           isCorrect,
           guessedName: data.guess,
           targetName: roundData.target_contact_name,
+          guessedNumber: isNumberGame ? guessedNumber : null,
+          targetNumber: isNumberGame ? roundData.secret_number : null,
           guesserUsername: currentUser.username,
           roundId: data.roundId,
         });

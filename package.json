@@ -10,10 +10,14 @@
   "scripts": {
     "install-all": "npm install",
     "dev": "npm run dev --workspace=backend & npm run dev --workspace=frontend",
+    "start": "npm run start --workspace=backend",
     "backend:dev": "npm run dev --workspace=backend",
     "frontend:dev": "npm run dev --workspace=frontend",
     "backend:build": "npm run build --workspace=backend",
     "frontend:build": "npm run build --workspace=frontend",
-    "build": "npm run build --workspace=backend && npm run build --workspace=frontend"
+    "build": "npm run build --workspace=backend && npm run build --workspace=frontend",
+    "cap:sync": "npm run cap:sync --workspace=frontend",
+    "cap:build:ios": "npm run cap:build:ios --workspace=frontend",
+    "cap:build:android": "npm run cap:build:android --workspace=frontend"
   }
 }

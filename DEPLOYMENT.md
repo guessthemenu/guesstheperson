@@ -23,23 +23,31 @@
 
 ## Environment Blockers On This Machine
 
-- Android native build is blocked by a missing Java runtime.
-- iOS native build is blocked because full Xcode and CocoaPods are not installed, and `xcode-select` points to Command Line Tools.
+- Java and CocoaPods are installed and working.
+- Android Studio is installed, but the Android SDK is not configured yet.
+- iOS native build is still blocked because full Xcode is not installed or selected, and `xcode-select` points to Command Line Tools.
 
 ## Native Build Commands
 
 ### Android
 
-1. Install a JDK and Android Studio.
-2. Set `JAVA_HOME`.
-3. Run `npm --prefix frontend run cap:sync`.
-4. Run `cd frontend/android && ./gradlew assembleDebug`.
+1. Open Android Studio and complete first-run setup.
+2. Install the Android SDK, platform tools, and at least one platform image.
+3. Set `ANDROID_HOME` or create `frontend/android/local.properties` with `sdk.dir=<path-to-sdk>`.
+4. Set `JAVA_HOME` to Homebrew OpenJDK 17.
+5. Run `npm --prefix frontend run cap:sync`.
+6. Run `cd frontend/android && ./gradlew assembleDebug`.
 
 ### iOS
 
 1. Install full Xcode from the App Store.
 2. Run `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`.
-3. Install CocoaPods with `sudo gem install cocoapods` or `brew install cocoapods`.
-4. Run `npm --prefix frontend run cap:sync`.
-5. Run `cd frontend/ios/App && pod install`.
-6. Build with `xcodebuild -workspace App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator build`.
+3. Open Xcode once to accept the license and finish component installation.
+4. CocoaPods is already installed on this machine, but if needed use `brew install cocoapods`.
+5. Run `npm --prefix frontend run cap:sync`.
+6. Run `cd frontend/ios/App && pod install`.
+7. Build with `xcodebuild -workspace App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator build`.
+
+## Local Helper
+
+Run `scripts/check-native-setup.sh` to see the current native prerequisites and the exact next commands to execute.

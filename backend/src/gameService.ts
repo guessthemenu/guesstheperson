@@ -1,9 +1,12 @@
 import { pool } from './db';
 import { v4 as uuidv4 } from 'uuid';
 
+export type GameType = 'guess_person' | 'guess_number';
+
 export interface GameConfig {
   hostId: string;
   gameId: string;
+  gameType: GameType;
   isTeamMode: boolean;
   totalRounds: number;
   playerIds: string[];
@@ -14,8 +17,8 @@ export class GameService {
   async createGame(hostId: string, config: Partial<GameConfig>) {
     const gameId = uuidv4();
     const query = `
-      INSERT INTO games (id, host_id, is_team_mode, total_rounds, status)
-      VALUES ($1, $2, $3, $4, 'lobby')
+      INSERT INTO games (id, host_id, is_team_mode, total_rounds, status, game_type)
+      VALUES ($1, $2, $3, $4, 'lobby', $5)
       RETURNING *;
     `;
     
@@ -24,6 +27,7 @@ export class GameService {
       hostId,
       config.isTeamMode || false,
       config.totalRounds || 3,
+      config.gameType || 'guess_person',
     ]);
     
     return result.rows[0];
@@ -86,8 +90,8 @@ export class GameService {
     const roundNumber = gameResult.rows[0].current_round;
     
     const roundQuery = `
-      INSERT INTO game_rounds (id, game_id, round_number, target_contact_name, guesser_user_id)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO game_rounds (id, game_id, game_type, round_number, target_contact_name, guesser_user_id)
+      VALUES ($1, $2, 'guess_person', $3, $4, $5)
       RETURNING *;
     `;
     
@@ -106,6 +110,42 @@ export class GameService {
       [gameId]
     );
     
+    return result.rows[0];
+  }
+
+  async startNumberRound(gameId: string, guesserUserId: string, secretNumber: number) {
+    const roundId = uuidv4();
+
+    const gameQuery = `SELECT current_round FROM games WHERE id = $1;`;
+    const gameResult = await pool.query(gameQuery, [gameId]);
+    const roundNumber = gameResult.rows[0].current_round;
+
+    const roundQuery = `
+      INSERT INTO game_rounds (id, game_id, game_type, round_number, guesser_user_id)
+      VALUES ($1, $2, 'guess_number', $3, $4)
+      RETURNING *;
+    `;
+
+    const result = await pool.query(roundQuery, [
+      roundId,
+      gameId,
+      roundNumber,
+      guesserUserId,
+    ]);
+
+    await pool.query(
+      `INSERT INTO number_rounds (game_round_id, secret_number, max_questions, active_responder_index)
+       VALUES ($1, $2, 3, 0)`,
+      [roundId, secretNumber]
+    );
+
+    await pool.query(
+      `UPDATE games
+       SET current_round = current_round + 1
+       WHERE id = $1`,
+      [gameId]
+    );
+
     return result.rows[0];
   }
 
@@ -151,6 +191,52 @@ export class GameService {
     
     const result = await pool.query(query, [isCorrect, guessedName, roundId]);
     return result.rows[0];
+  }
+
+  async recordNumberClue(
+    roundId: string,
+    responderUserId: string,
+    promptText: string,
+    clueText: string,
+    turnOrder: number
+  ) {
+    const clueId = uuidv4();
+    const query = `
+      INSERT INTO number_round_clues (id, game_round_id, responder_user_id, prompt_text, clue_text, turn_order)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING *;
+    `;
+
+    const result = await pool.query(query, [
+      clueId,
+      roundId,
+      responderUserId,
+      promptText,
+      clueText,
+      turnOrder,
+    ]);
+
+    await pool.query(
+      `UPDATE number_rounds
+       SET active_responder_index = active_responder_index + 1
+       WHERE game_round_id = $1`,
+      [roundId]
+    );
+
+    return result.rows[0];
+  }
+
+  async getNumberRoundClues(roundId: string) {
+    const query = `
+      SELECT nrc.id, nrc.prompt_text, nrc.clue_text, nrc.turn_order, nrc.responder_user_id, u.username AS responder_username
+      FROM number_round_clues nrc
+      JOIN users u ON u.id = nrc.responder_user_id
+      WHERE nrc.game_round_id = $1
+      ORDER BY nrc.turn_order ASC;
+    `;
+
+    const result = await pool.query(query, [roundId]);
+    return result.rows;
   }
 
   async updatePlayerStats(

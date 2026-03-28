@@ -9,7 +9,8 @@ import QuestionCounter from './QuestionCounter';
 import TeamDisplay from './TeamDisplay';
 import './App.css';
 
-type Screen = 'welcome' | 'profile' | 'lobby-choice' | 'lobby' | 'playing';
+type Screen = 'landing' | 'welcome' | 'profile' | 'lobby-choice' | 'lobby' | 'playing';
+type GameType = 'guess_person' | 'guess_number';
 
 type ContactRecord = {
   name?: string;
@@ -18,6 +19,11 @@ type ContactRecord = {
   email?: string;
   phones?: Array<{ number?: string }>;
   emails?: Array<{ address?: string }>;
+};
+
+type NumberCategorySuggestion = {
+  prompt: string;
+  examples: string[];
 };
 
 type LobbyPlayer = {
@@ -34,6 +40,7 @@ type LobbyPlayer = {
 type LobbyState = {
   gameId: string;
   hostId: string;
+  gameType: GameType;
   isTeamMode: boolean;
   totalRounds: number;
   status: string;
@@ -53,7 +60,10 @@ type TeamCard = {
 
 type GameStartedPayload = {
   gameId: string;
+  gameType: GameType;
   mutualContacts: Array<{ name?: string; contact_name?: string; users?: string[] }>;
+  categorySuggestions?: NumberCategorySuggestion[];
+  numberRange?: { min: number; max: number };
   players: LobbyPlayer[];
   isTeamMode: boolean;
 };
@@ -61,8 +71,14 @@ type GameStartedPayload = {
 type ActiveRound = {
   roundId: string;
   roundNumber: number;
+  gameType: GameType;
   guesserUserId: string;
   guesserName: string;
+  responderOrder: Array<{ user_id: string; username: string }>;
+  activeResponderUserId: string | null;
+  suggestedCategories: NumberCategorySuggestion[];
+  questionLimit: number;
+  cluePhaseComplete: boolean;
 };
 
 type QuestionEntry = {
@@ -72,10 +88,22 @@ type QuestionEntry = {
   askerUsername: string;
 };
 
+type NumberClue = {
+  id: string;
+  prompt_text: string;
+  clue_text: string;
+  turn_order: number;
+  responder_user_id: string;
+  responder_username: string;
+};
+
 type GuessResult = {
+  gameType: GameType;
   isCorrect: boolean;
   guessedName: string;
-  targetName: string;
+  targetName: string | null;
+  guessedNumber: number | null;
+  targetNumber: number | null;
   guesserUsername: string;
   roundId: string;
 };
@@ -91,6 +119,16 @@ function createInviteUrl(gameId: string) {
   const inviteUrl = new URL(window.location.href);
   inviteUrl.searchParams.set('game', gameId);
   return inviteUrl.toString();
+}
+
+function getGameLabel(gameType: GameType | null) {
+  return gameType === 'guess_number' ? 'Guess the Number' : 'Guess the Person';
+}
+
+function getGameTagline(gameType: GameType | null) {
+  return gameType === 'guess_number'
+    ? 'Everyone else sees the number. The guesser reads the room.'
+    : 'Mutual contacts become the hidden target.';
 }
 
 function getMutualContactName(contact?: { name?: string; contact_name?: string }) {
@@ -143,14 +181,15 @@ function mapPlayerProfile(player: LobbyPlayer) {
 }
 
 export default function App() {
-  const [screen, setScreen] = useState<Screen>('welcome');
+  const [screen, setScreen] = useState<Screen>('landing');
+  const [selectedGameType, setSelectedGameType] = useState<GameType | null>(null);
   const [contacts, setContacts] = useState<ContactRecord[]>([]);
   const [username, setUsername] = useState('');
   const [joinCode, setJoinCode] = useState(getInviteCodeFromUrl());
   const [userId, setUserId] = useState<string | null>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [connectionState, setConnectionState] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
-  const [statusMessage, setStatusMessage] = useState('Import your contacts, spin up a lobby, and send one link to the whole group.');
+  const [statusMessage, setStatusMessage] = useState('Choose a game, open a lobby, and test the whole flow locally in a mobile-style browser view.');
   const [errorMessage, setErrorMessage] = useState('');
   const [isBusy, setIsBusy] = useState(false);
   const [lobby, setLobby] = useState<LobbyState | null>(null);
@@ -164,25 +203,37 @@ export default function App() {
   const [gameSummary, setGameSummary] = useState<GameStartedPayload | null>(null);
   const [activeRound, setActiveRound] = useState<ActiveRound | null>(null);
   const [revealedTargetName, setRevealedTargetName] = useState('');
+  const [revealedSecretNumber, setRevealedSecretNumber] = useState<number | null>(null);
   const [selectedGuesserId, setSelectedGuesserId] = useState('');
   const [selectedTargetName, setSelectedTargetName] = useState('');
   const [questionText, setQuestionText] = useState('');
   const [questionFeed, setQuestionFeed] = useState<QuestionEntry[]>([]);
+  const [numberClues, setNumberClues] = useState<NumberClue[]>([]);
+  const [selectedPrompt, setSelectedPrompt] = useState('');
+  const [customPrompt, setCustomPrompt] = useState('');
+  const [clueText, setClueText] = useState('');
   const [guessInput, setGuessInput] = useState('');
   const [latestGuessResult, setLatestGuessResult] = useState<GuessResult | null>(null);
   const [finalScores, setFinalScores] = useState<LobbyPlayer[] | null>(null);
+  const [manualContactInput, setManualContactInput] = useState('');
 
+  const currentGameType = activeRound?.gameType || gameSummary?.gameType || lobby?.gameType || selectedGameType;
   const inviteUrl = gameCode ? createInviteUrl(gameCode) : '';
   const teams = lobby ? mapTeams(lobby.players, teamAssignments, lobby.isTeamMode) : [];
   const canStartGame = !!lobby && lobby.players.length >= 2 && (!lobby.isTeamMode || Object.keys(teamAssignments).length === lobby.players.length);
   const playersInGame = gameSummary?.players || lobby?.players || [];
-  const mutualContactNames = (gameSummary?.mutualContacts || [])
-    .map((contact) => getMutualContactName(contact))
-    .filter(Boolean);
+  const mutualContactNames = (gameSummary?.mutualContacts || []).map((contact) => getMutualContactName(contact)).filter(Boolean);
+  const activeSuggestions = activeRound?.suggestedCategories || gameSummary?.categorySuggestions || [];
   const isCurrentUserHost = !!userId && !!lobby && lobby.hostId === userId;
   const isCurrentUserGuesser = !!userId && !!activeRound && activeRound.guesserUserId === userId;
+  const isCurrentUserResponder = !!userId && !!activeRound && activeRound.activeResponderUserId === userId;
   const roundIsLive = !!activeRound && !latestGuessResult;
-  const canLaunchRound = !!socket && !!lobby && !!gameSummary && !!selectedGuesserId && !!selectedTargetName && !roundIsLive && !isBusy;
+  const questionLimit = activeRound?.questionLimit || (currentGameType === 'guess_number' ? 3 : 20);
+  const currentPromptValue = customPrompt.trim() || selectedPrompt;
+  const canLaunchRound = !!socket && !!lobby && !!gameSummary && !!selectedGuesserId && !roundIsLive && !isBusy && (currentGameType === 'guess_number' || !!selectedTargetName);
+  const canSubmitNumberClue = !!socket && !!activeRound && !!currentPromptValue && !!clueText.trim() && isCurrentUserResponder && roundIsLive;
+
+  const displayTeams = lobby ? mapTeams(playersInGame, teamAssignments, lobby.isTeamMode) : [];
 
   useEffect(() => {
     const nextSocket = io(DEFAULT_API_URL, {
@@ -216,37 +267,33 @@ export default function App() {
       setIsBusy(false);
       setErrorMessage('');
 
-      if (pendingAction === 'create') {
-        socket.emit('create-game', {
-          isTeamMode,
-          totalRounds,
-          playerIds: [payload.userId],
-        });
-        setStatusMessage('Creating your lobby and preparing the invite link.');
-        setPendingAction(null);
-        return;
-      }
-
       if (pendingAction === 'join') {
         setStatusMessage('Joining the lobby from your invite link.');
         setPendingAction(null);
         return;
       }
 
-      setScreen('lobby-choice');
-      setStatusMessage('Choose whether you want to host a lobby or join one that already exists.');
+      if (!pendingAction) {
+        setScreen('lobby-choice');
+        setStatusMessage('Choose whether you want to host a lobby or join one that already exists.');
+      }
+      // pendingAction === 'create' is handled by the dedicated useEffect below
     };
 
-    const handleGameCreated = (payload: { gameId: string }) => {
+    const handleGameCreated = (payload: { gameId: string; gameType: GameType }) => {
       setGameCode(payload.gameId);
+      setSelectedGameType(payload.gameType);
       setScreen('lobby');
       setIsBusy(false);
       setShareState('');
       setStatusMessage('Lobby is live. Share the link or QR code so other players can join.');
     };
 
-    const handleLobbyJoined = (payload: { gameId: string }) => {
+    const handleLobbyJoined = (payload: { gameId: string; gameType?: GameType }) => {
       setGameCode(payload.gameId);
+      if (payload.gameType) {
+        setSelectedGameType(payload.gameType);
+      }
       setScreen('lobby');
       setIsBusy(false);
       setStatusMessage('Lobby connected. Waiting for the full party to assemble.');
@@ -254,6 +301,7 @@ export default function App() {
 
     const handleLobbyUpdated = (payload: LobbyState) => {
       setLobby(payload);
+      setSelectedGameType(payload.gameType);
       setScreen('lobby');
       setGameCode(payload.gameId);
       setIsBusy(false);
@@ -273,53 +321,114 @@ export default function App() {
 
     const handleGameStarted = (payload: GameStartedPayload) => {
       setGameSummary(payload);
+      setSelectedGameType(payload.gameType);
       setActiveRound(null);
       setQuestionFeed([]);
+      setNumberClues([]);
       setGuessInput('');
       setLatestGuessResult(null);
       setRevealedTargetName('');
+      setRevealedSecretNumber(null);
       setFinalScores(null);
       setSelectedGuesserId(payload.players[0]?.user_id || '');
       setSelectedTargetName(getMutualContactName(payload.mutualContacts[0]));
+      setSelectedPrompt('');
+      setCustomPrompt('');
+      setClueText('');
       setScreen('playing');
       setIsBusy(false);
-      setStatusMessage('Match started. Host can configure the first round now.');
+      setStatusMessage(payload.gameType === 'guess_number' ? 'Match started. Host can launch the first number round.' : 'Match started. Host can configure the first round now.');
     };
 
-    const handleRoundStarted = (payload: { roundId: string; guesserUserId: string; guesserName: string; roundNumber: number }) => {
+    const handleRoundStarted = (payload: {
+      roundId: string;
+      gameType: GameType;
+      guesserUserId: string;
+      guesserName: string;
+      roundNumber: number;
+      responderOrder?: Array<{ user_id: string; username: string }>;
+      activeResponderUserId?: string | null;
+      suggestedCategories?: NumberCategorySuggestion[];
+      questionLimit?: number;
+    }) => {
       setActiveRound({
         roundId: payload.roundId,
+        roundNumber: payload.roundNumber,
+        gameType: payload.gameType,
         guesserUserId: payload.guesserUserId,
         guesserName: payload.guesserName,
-        roundNumber: payload.roundNumber,
+        responderOrder: payload.responderOrder || [],
+        activeResponderUserId: payload.activeResponderUserId ?? null,
+        suggestedCategories: payload.suggestedCategories || [],
+        questionLimit: payload.questionLimit || (payload.gameType === 'guess_number' ? 3 : 20),
+        cluePhaseComplete: payload.gameType === 'guess_number' ? !payload.activeResponderUserId : true,
       });
       setQuestionFeed([]);
+      setNumberClues([]);
       setLatestGuessResult(null);
       setGuessInput('');
+      setSelectedPrompt('');
+      setCustomPrompt('');
+      setClueText('');
       setRevealedTargetName('');
+      setRevealedSecretNumber(null);
       setIsBusy(false);
-      setStatusMessage(`Round ${payload.roundNumber} is live. ${payload.guesserName} is the guesser.`);
+      setStatusMessage(
+        payload.gameType === 'guess_number'
+          ? `Round ${payload.roundNumber} is live. Players are building clues for ${payload.guesserName}.`
+          : `Round ${payload.roundNumber} is live. ${payload.guesserName} is the guesser.`
+      );
     };
 
-    const handleYourTarget = (payload: { targetName: string; roundId: string }) => {
+    const handleYourTarget = (payload: { targetName: string }) => {
       setRevealedTargetName(payload.targetName);
+    };
+
+    const handleNumberSecret = (payload: { secretNumber: number }) => {
+      setRevealedSecretNumber(payload.secretNumber);
     };
 
     const handleQuestionAnswered = (payload: QuestionEntry) => {
       setQuestionFeed((currentFeed) => [...currentFeed, payload]);
     };
 
+    const handleNumberClueRecorded = (payload: {
+      clues: NumberClue[];
+      activeResponderUserId: string | null;
+      cluePhaseComplete: boolean;
+    }) => {
+      setNumberClues(payload.clues);
+      setActiveRound((currentRound) => {
+        if (!currentRound) {
+          return currentRound;
+        }
+
+        return {
+          ...currentRound,
+          activeResponderUserId: payload.activeResponderUserId,
+          cluePhaseComplete: payload.cluePhaseComplete,
+        };
+      });
+      if (payload.cluePhaseComplete) {
+        setStatusMessage('Clue phase complete. The guesser can ask up to three questions and make a final guess.');
+      }
+    };
+
     const handleGuessResult = (payload: GuessResult) => {
       setLatestGuessResult(payload);
       setIsBusy(false);
       setStatusMessage(
-        payload.isCorrect
-          ? `${payload.guesserUsername} guessed correctly: ${payload.targetName}.`
-          : `${payload.guesserUsername} guessed ${payload.guessedName}. The correct answer was ${payload.targetName}.`
+        payload.gameType === 'guess_number'
+          ? payload.isCorrect
+            ? `${payload.guesserUsername} nailed the number ${payload.targetNumber}.`
+            : `${payload.guesserUsername} guessed ${payload.guessedNumber}. The hidden number was ${payload.targetNumber}.`
+          : payload.isCorrect
+            ? `${payload.guesserUsername} guessed correctly: ${payload.targetName}.`
+            : `${payload.guesserUsername} guessed ${payload.guessedName}. The correct answer was ${payload.targetName}.`
       );
     };
 
-    const handleGameEnded = (payload: { gameId: string; finalScores: LobbyPlayer[] }) => {
+    const handleGameEnded = (payload: { finalScores: LobbyPlayer[] }) => {
       setFinalScores(payload.finalScores);
       setActiveRound(null);
       setIsBusy(false);
@@ -340,7 +449,9 @@ export default function App() {
     socket.on('game-started', handleGameStarted);
     socket.on('round-started', handleRoundStarted);
     socket.on('your-target', handleYourTarget);
+    socket.on('number-secret', handleNumberSecret);
     socket.on('question-answered', handleQuestionAnswered);
+    socket.on('number-clue-recorded', handleNumberClueRecorded);
     socket.on('guess-result', handleGuessResult);
     socket.on('game-ended', handleGameEnded);
     socket.on('error', handleServerError);
@@ -355,12 +466,30 @@ export default function App() {
       socket.off('game-started', handleGameStarted);
       socket.off('round-started', handleRoundStarted);
       socket.off('your-target', handleYourTarget);
+      socket.off('number-secret', handleNumberSecret);
       socket.off('question-answered', handleQuestionAnswered);
+      socket.off('number-clue-recorded', handleNumberClueRecorded);
       socket.off('guess-result', handleGuessResult);
       socket.off('game-ended', handleGameEnded);
       socket.off('error', handleServerError);
     };
-  }, [socket, pendingAction, isTeamMode, totalRounds]);
+  }, [socket, pendingAction, isTeamMode, totalRounds, selectedGameType]);
+
+  // Emit create-game once userId is confirmed, reading fresh state values to avoid stale closures
+  useEffect(() => {
+    if (!socket || !userId || pendingAction !== 'create') {
+      return;
+    }
+
+    socket.emit('create-game', {
+      gameType: selectedGameType || 'guess_person',
+      isTeamMode,
+      totalRounds,
+      playerIds: [userId],
+    });
+    setStatusMessage(`Creating a ${getGameLabel(selectedGameType)} lobby and preparing the invite link.`);
+    setPendingAction(null);
+  }, [socket, userId, pendingAction, selectedGameType, isTeamMode, totalRounds]);
 
   useEffect(() => {
     if (!gameCode) {
@@ -390,7 +519,27 @@ export default function App() {
     window.history.replaceState({}, '', nextUrl.toString());
   }, [gameCode]);
 
+  function chooseGameType(gameType: GameType) {
+    setSelectedGameType(gameType);
+    setContacts([]);
+    setErrorMessage('');
+    setGameSummary(null);
+    setActiveRound(null);
+    setStatusMessage(
+      gameType === 'guess_number'
+        ? 'Build ridiculous clue rounds around a hidden number from zero to ten.'
+        : 'Import contacts or continue without them to set up a Guess the Person lobby.'
+    );
+    setScreen(gameType === 'guess_person' ? 'welcome' : 'profile');
+  }
+
   async function importContacts() {
+    if (!Capacitor.isNativePlatform()) {
+      setScreen('profile');
+      setStatusMessage('Add contacts manually below, or continue without them.');
+      return;
+    }
+
     setIsBusy(true);
     setErrorMessage('');
     setStatusMessage('Requesting contact access from the device.');
@@ -422,14 +571,32 @@ export default function App() {
     setStatusMessage('You can still host or join a lobby now, then import contacts later on device.');
   }
 
+  function addManualContact() {
+    const name = manualContactInput.trim();
+    if (!name) {
+      return;
+    }
+    setContacts((current) => [...current, { name }]);
+    setManualContactInput('');
+  }
+
+  function removeManualContact(name: string) {
+    setContacts((current) => current.filter((c) => (c.name || c.displayName) !== name));
+  }
+
   function registerForLobby(action: 'create' | 'join') {
-    if (!socket) {
-      setErrorMessage('Socket connection is not ready yet.');
+    if (!socket || connectionState !== 'connected') {
+      setErrorMessage('Waiting for the server connection. Try again in a moment.');
       return;
     }
 
     if (!username.trim()) {
       setErrorMessage('Enter a player name before continuing.');
+      return;
+    }
+
+    if (action === 'create' && !selectedGameType) {
+      setErrorMessage('Choose a game mode before creating a lobby.');
       return;
     }
 
@@ -446,6 +613,7 @@ export default function App() {
     if (userId) {
       if (action === 'create') {
         socket.emit('create-game', {
+          gameType: selectedGameType,
           isTeamMode,
           totalRounds,
           playerIds: [userId],
@@ -461,7 +629,7 @@ export default function App() {
 
     socket.emit('join-game', {
       username: username.trim(),
-      contacts,
+      contacts: selectedGameType === 'guess_person' ? contacts : [],
       gameId: action === 'join' ? joinCode.trim() : undefined,
     });
   }
@@ -479,8 +647,8 @@ export default function App() {
     }
 
     const sharePayload = {
-      title: 'Join my GuessThePerson lobby',
-      text: `Join my GuessThePerson lobby with code ${gameCode}.`,
+      title: `Join my ${getGameLabel(currentGameType)} lobby`,
+      text: `Join my ${getGameLabel(currentGameType)} lobby with code ${gameCode}.`,
       url: inviteUrl,
     };
 
@@ -518,7 +686,7 @@ export default function App() {
 
     setIsBusy(true);
     setErrorMessage('');
-    setStatusMessage('Locking team assignments and starting the first round.');
+    setStatusMessage('Locking team assignments and starting the match.');
     socket.emit('start-game', {
       gameId: lobby.gameId,
       teamAssignments: lobby.isTeamMode ? teamAssignments : undefined,
@@ -526,22 +694,31 @@ export default function App() {
   }
 
   function startRound() {
-    if (!socket || !lobby || !selectedGuesserId || !selectedTargetName) {
+    if (!socket || !lobby || !selectedGuesserId) {
+      return;
+    }
+
+    if (currentGameType === 'guess_person' && !selectedTargetName) {
       return;
     }
 
     setIsBusy(true);
     setLatestGuessResult(null);
-    setStatusMessage('Starting the next round and delivering the target to the guesser.');
+    setStatusMessage('Starting the next round.');
     socket.emit('start-round', {
       gameId: lobby.gameId,
-      targetContact: selectedTargetName,
+      targetContact: currentGameType === 'guess_person' ? selectedTargetName : undefined,
       guesserUserId: selectedGuesserId,
     });
   }
 
   function recordQuestion(answer: boolean) {
     if (!socket || !activeRound || !questionText.trim() || !roundIsLive) {
+      return;
+    }
+
+    if (questionFeed.length >= questionLimit) {
+      setErrorMessage(`This round allows only ${questionLimit} questions.`);
       return;
     }
 
@@ -554,8 +731,29 @@ export default function App() {
     setQuestionText('');
   }
 
+  function submitNumberClue() {
+    if (!socket || !activeRound || !canSubmitNumberClue || !lobby) {
+      return;
+    }
+
+    socket.emit('submit-number-clue', {
+      gameId: lobby.gameId,
+      roundId: activeRound.roundId,
+      promptText: currentPromptValue,
+      clueText: clueText.trim(),
+    });
+    setSelectedPrompt('');
+    setCustomPrompt('');
+    setClueText('');
+  }
+
   function submitGuess() {
     if (!socket || !activeRound || !lobby || !guessInput.trim() || !roundIsLive) {
+      return;
+    }
+
+    if (activeRound.gameType === 'guess_number' && !activeRound.cluePhaseComplete) {
+      setErrorMessage('Wait until every non-guesser has submitted a clue.');
       return;
     }
 
@@ -576,20 +774,62 @@ export default function App() {
     socket.emit('end-game', { gameId: lobby.gameId });
   }
 
+  function renderLandingScreen() {
+    return (
+      <section className="panel landing-panel">
+        <div className="landing-hero">
+          <div className="question-mark-logo">?</div>
+          <div className="hero-copy">
+            <span className="eyebrow">Two party games, one lobby system</span>
+            <h1>Pick The Guessing Game</h1>
+            <p>
+              Build a live room, invite friends with a link or QR code, and test everything locally in a phone-sized browser view before you touch native builds.
+            </p>
+          </div>
+        </div>
+
+        <div className="game-mode-grid">
+          <button className="game-mode-card" onClick={() => chooseGameType('guess_person')}>
+            <span className="mode-kicker">Guess the Person</span>
+            <strong>Use shared contacts as the hidden answer.</strong>
+            <p>Import contacts when available, create a team lobby, and guide one player toward the right name.</p>
+            <span className="mode-cta">Play Guess the Person</span>
+          </button>
+
+          <button className="game-mode-card game-mode-card-alt" onClick={() => chooseGameType('guess_number')}>
+            <span className="mode-kicker">Guess the Number</span>
+            <strong>Everyone but the guesser sees the secret number from 0 to 10.</strong>
+            <p>Players answer with ridiculous category clues, the guesser asks up to three questions, then goes for the final number.</p>
+            <span className="mode-cta">Play Guess the Number</span>
+          </button>
+        </div>
+
+        {joinCode && (
+          <div className="invite-hint">
+            <span className="pill">Invite detected</span>
+            <p>There is a lobby code in the URL. Pick a mode if you are hosting, or continue and join the shared room after entering your name.</p>
+          </div>
+        )}
+      </section>
+    );
+  }
+
   function renderWelcomeScreen() {
     return (
       <section className="panel hero-panel">
         <div className="hero-copy">
-          <span className="eyebrow">Phone contacts become the game board</span>
-          <h1>GuessThePerson</h1>
+          <span className="eyebrow">{getGameLabel(currentGameType)}</span>
+          <h1>{getGameLabel(currentGameType)}</h1>
           <p>
-            Create a live lobby, invite friends with one link or QR code, and sort the room into teams before the first round starts.
+            {currentGameType === 'guess_person'
+              ? 'Import contacts if you have them, then open a live lobby and let the room work out which shared person is hidden.'
+              : 'This mode does not need contacts, so you can jump straight to your player profile and start a ridiculous number lobby.'}
           </p>
         </div>
 
         <div className="hero-actions">
           <button onClick={importContacts} className="btn btn-primary" disabled={isBusy}>
-            {isBusy ? 'Checking Contacts...' : 'Import Contacts'}
+            {isBusy ? 'Checking Contacts...' : Capacitor.isNativePlatform() ? 'Import Contacts' : 'Add Contacts Manually'}
           </button>
           <button onClick={continueWithoutContacts} className="btn btn-secondary" disabled={isBusy}>
             Continue Without Contacts
@@ -602,12 +842,12 @@ export default function App() {
             <span>Presence updates as players join from shared invites.</span>
           </div>
           <div>
-            <strong>Native Sharing</strong>
-            <span>QR, clipboard, and device share sheet support.</span>
+            <strong>QR And Link Sharing</strong>
+            <span>One lobby system drives both game modes.</span>
           </div>
           <div>
-            <strong>Capacitor Ready</strong>
-            <span>Same React code path for web, iOS, and Android.</span>
+            <strong>Mobile-Test Ready</strong>
+            <span>Responsive layout designed for browser phone emulation.</span>
           </div>
         </div>
       </section>
@@ -621,30 +861,62 @@ export default function App() {
           <span className="eyebrow">Player Setup</span>
           <h2>Choose the name everyone will see in the lobby.</h2>
           <p>
-            {contacts.length > 0
-              ? `Your contact import is loaded with ${contacts.length} entries and ready to sync with the backend.`
-              : 'You are continuing without imported contacts for now.'}
+            {currentGameType === 'guess_person'
+              ? contacts.length > 0
+                ? `Your contact import is loaded with ${contacts.length} entries and ready to sync with the backend.`
+                : 'You are continuing without imported contacts for now.'
+              : 'Guess the Number skips contacts entirely. You only need a display name to start testing locally.'}
           </p>
         </div>
 
         <label className="field">
           <span>Display name</span>
-          <input
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
-            className="input"
-            placeholder="Mina, Tom, Jules..."
-          />
+          <input value={username} onChange={(event) => setUsername(event.target.value)} className="input" placeholder="Mina, Tom, Jules..." />
         </label>
 
         <div className="inline-actions">
           <button onClick={() => setScreen('lobby-choice')} className="btn btn-primary" disabled={!username.trim()}>
             Continue
           </button>
-          <button onClick={importContacts} className="btn btn-secondary" disabled={isBusy}>
-            Retry Contact Import
-          </button>
+          {currentGameType === 'guess_person' && Capacitor.isNativePlatform() && (
+            <button onClick={importContacts} className="btn btn-secondary" disabled={isBusy}>
+              Retry Contact Import
+            </button>
+          )}
         </div>
+
+        {currentGameType === 'guess_person' && !Capacitor.isNativePlatform() && (
+          <div className="contact-editor">
+            <label className="field">
+              <span>Add people as contacts</span>
+              <div className="inline-actions">
+                <input
+                  value={manualContactInput}
+                  onChange={(e) => setManualContactInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && addManualContact()}
+                  className="input"
+                  placeholder="Person's name..."
+                />
+                <button onClick={addManualContact} className="btn btn-secondary" disabled={!manualContactInput.trim()}>
+                  Add
+                </button>
+              </div>
+            </label>
+            {contacts.length > 0 && (
+              <div className="contact-chip-list">
+                {contacts.map((c) => (
+                  <button
+                    key={c.name || c.displayName}
+                    className="removable-chip"
+                    onClick={() => removeManualContact(c.name || c.displayName || '')}
+                  >
+                    {c.name || c.displayName} ✕
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </section>
     );
   }
@@ -653,58 +925,36 @@ export default function App() {
     return (
       <section className="panel split-panel">
         <div className="card-section">
-          <span className="eyebrow">Host A Match</span>
+          <span className="eyebrow">Host {getGameLabel(currentGameType)}</span>
           <h2>Create a new lobby</h2>
-          <p>Pick round count, turn on teams if you want, then publish the invite link.</p>
+          <p>{getGameTagline(currentGameType)} Pick round count, choose teams if you want them, then send the invite around.</p>
 
           <div className="toggle-row">
-            <button
-              className={`chip ${isTeamMode ? 'chip-active' : ''}`}
-              onClick={() => setIsTeamMode(true)}
-            >
-              Team Mode
-            </button>
-            <button
-              className={`chip ${!isTeamMode ? 'chip-active' : ''}`}
-              onClick={() => setIsTeamMode(false)}
-            >
-              Solo Mode
-            </button>
+            <button className={`chip ${isTeamMode ? 'chip-active' : ''}`} onClick={() => setIsTeamMode(true)}>Team Mode</button>
+            <button className={`chip ${!isTeamMode ? 'chip-active' : ''}`} onClick={() => setIsTeamMode(false)}>Solo Mode</button>
           </div>
 
           <label className="field">
             <span>Rounds</span>
-            <input
-              className="input"
-              type="number"
-              min={1}
-              max={10}
-              value={totalRounds}
-              onChange={(event) => setTotalRounds(Number(event.target.value) || 1)}
-            />
+            <input className="input" type="number" min={1} max={10} value={totalRounds} onChange={(event) => setTotalRounds(Number(event.target.value) || 1)} />
           </label>
 
-          <button onClick={() => registerForLobby('create')} className="btn btn-primary" disabled={isBusy}>
-            {isBusy && pendingAction === 'create' ? 'Creating Lobby...' : 'Create Lobby'}
+          <button onClick={() => registerForLobby('create')} className="btn btn-primary" disabled={isBusy || connectionState !== 'connected'}>
+            {isBusy && pendingAction === 'create' ? 'Creating Lobby...' : `Create ${getGameLabel(currentGameType)} Lobby`}
           </button>
         </div>
 
         <div className="card-section muted-card">
           <span className="eyebrow">Join A Match</span>
           <h2>Enter a lobby code</h2>
-          <p>Invite links automatically prefill this field when opened on web or mobile.</p>
+          <p>Invite links automatically prefill this field. If you are joining, the lobby itself will decide which game mode is active.</p>
 
           <label className="field">
             <span>Lobby code</span>
-            <input
-              className="input"
-              value={joinCode}
-              onChange={(event) => setJoinCode(event.target.value.trim())}
-              placeholder="Paste a code or use an invite link"
-            />
+            <input className="input" value={joinCode} onChange={(event) => setJoinCode(event.target.value.trim())} placeholder="Paste a code or use an invite link" />
           </label>
 
-          <button onClick={() => registerForLobby('join')} className="btn btn-secondary" disabled={isBusy}>
+          <button onClick={() => registerForLobby('join')} className="btn btn-secondary" disabled={isBusy || connectionState !== 'connected'}>
             {isBusy && pendingAction === 'join' ? 'Joining Lobby...' : 'Join Lobby'}
           </button>
         </div>
@@ -723,14 +973,12 @@ export default function App() {
           <div className="panel-heading">
             <div>
               <span className="eyebrow">Lobby Invite</span>
-              <h2>Code {lobby.gameId}</h2>
+              <h2>{getGameLabel(lobby.gameType)}</h2>
             </div>
-            <span className="pill">{lobby.players.length} players</span>
+            <span className="pill">Code {lobby.gameId}</span>
           </div>
 
-          <p>
-            Share the link or QR code. Players joining from that invite land directly in this lobby and receive live updates over Socket.io.
-          </p>
+          <p>Share the link or QR code. Players joining from that invite land directly in this lobby and receive live updates over Socket.io.</p>
 
           <div className="share-box">
             <input className="input share-input" readOnly value={inviteUrl} />
@@ -755,17 +1003,13 @@ export default function App() {
               <span className="eyebrow">Lobby Presence</span>
               <h2>Players</h2>
             </div>
-            <span className="pill accent-pill">{lobby.isTeamMode ? 'Team mode on' : 'Solo mode'}</span>
+            <span className="pill accent-pill">{getGameLabel(lobby.gameType)} · {lobby.isTeamMode ? 'Team mode' : 'Solo mode'}</span>
           </div>
 
           <div className="player-grid">
             {lobby.players.map((player) => (
               <div key={player.user_id} className="player-slot">
-                <PlayerProfile
-                  player={mapPlayerProfile(player)}
-                  showFullStats={false}
-                  isCurrentPlayer={player.user_id === userId}
-                />
+                <PlayerProfile player={mapPlayerProfile(player)} showFullStats={false} isCurrentPlayer={player.user_id === userId} />
                 <div className="player-meta">
                   <span className={`presence ${player.connected ? 'presence-online' : 'presence-offline'}`}>
                     {player.connected ? 'Connected' : 'Offline'}
@@ -793,12 +1037,8 @@ export default function App() {
           {teams.length > 0 && <TeamDisplay teams={teams} />}
 
           <div className="inline-actions compact-actions">
-            <button
-              onClick={startGame}
-              className="btn btn-primary"
-              disabled={userId !== lobby.hostId || !canStartGame || isBusy}
-            >
-              {isBusy ? 'Starting Game...' : 'Start Game'}
+            <button onClick={startGame} className="btn btn-primary" disabled={userId !== lobby.hostId || !canStartGame || isBusy}>
+              {isBusy ? 'Starting Game...' : `Start ${getGameLabel(lobby.gameType)}`}
             </button>
             {userId !== lobby.hostId && <p className="helper-text">Only the host can launch the match.</p>}
           </div>
@@ -807,21 +1047,108 @@ export default function App() {
     );
   }
 
-  function renderPlayingScreen() {
-    const displayTeams = lobby ? mapTeams(playersInGame, teamAssignments, lobby.isTeamMode) : [];
-
+  function renderQuestionCard(placeholder: string) {
     return (
-      <section className="panel stack-panel play-panel">
-        <div>
-          <span className="eyebrow">Live Match</span>
-          <h2>Game started</h2>
-          <p>
-            The lobby has been promoted to an active match. Mutual contact candidates were generated on the server and broadcast to the room.
-          </p>
+      <div className="round-card">
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">Questions</span>
+            <h2>{currentGameType === 'guess_number' ? 'Ask up to three questions' : 'Ask and record answers'}</h2>
+          </div>
         </div>
 
-        {gameSummary?.isTeamMode && displayTeams.length > 0 && <TeamDisplay teams={displayTeams} />}
+        <QuestionCounter
+          totalQuestions={questionFeed.length}
+          timeLimit={currentGameType === 'guess_number' ? 90 : 120}
+          onTimeUp={() => setStatusMessage('Round timer expired. Start the next round or end the game.')}
+          isActive={roundIsLive}
+        />
 
+        <label className="field">
+          <span>Question text</span>
+          <input className="input" value={questionText} onChange={(event) => setQuestionText(event.target.value)} placeholder={placeholder} disabled={!roundIsLive || questionFeed.length >= questionLimit} />
+        </label>
+
+        <div className="inline-actions compact-actions">
+          <button onClick={() => recordQuestion(true)} className="btn btn-primary" disabled={!roundIsLive || !questionText.trim() || questionFeed.length >= questionLimit}>
+            Record Yes
+          </button>
+          <button onClick={() => recordQuestion(false)} className="btn btn-secondary" disabled={!roundIsLive || !questionText.trim() || questionFeed.length >= questionLimit}>
+            Record No
+          </button>
+        </div>
+
+        <div className="question-log">
+          {questionFeed.length === 0 && <p className="helper-text">No questions recorded for this round yet.</p>}
+          {questionFeed.map((entry) => (
+            <div key={`${entry.questionNumber}-${entry.questionText}`} className="question-item">
+              <div>
+                <strong>Q{entry.questionNumber}</strong>
+                <p>{entry.questionText}</p>
+              </div>
+              <div className="question-answer-block">
+                <span className={`pill ${entry.answer ? 'answer-yes' : 'answer-no'}`}>{entry.answer ? 'Yes' : 'No'}</span>
+                <span className="helper-text">{entry.askerUsername}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  function renderGuessCard(placeholder: string) {
+    return (
+      <div className="round-card">
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">Final Guess</span>
+            <h2>{currentGameType === 'guess_number' ? 'Submit the hidden number' : 'Submit the final name'}</h2>
+          </div>
+        </div>
+
+        {isCurrentUserGuesser ? (
+          <>
+            <label className="field">
+              <span>Your guess</span>
+              <input
+                className="input"
+                value={guessInput}
+                onChange={(event) => setGuessInput(event.target.value)}
+                placeholder={placeholder}
+                disabled={!roundIsLive}
+                inputMode={currentGameType === 'guess_number' ? 'numeric' : 'text'}
+              />
+            </label>
+            <button
+              onClick={submitGuess}
+              className="btn btn-primary"
+              disabled={!roundIsLive || !guessInput.trim() || isBusy || (currentGameType === 'guess_number' && !activeRound?.cluePhaseComplete)}
+            >
+              Submit Guess
+            </button>
+          </>
+        ) : (
+          <p className="helper-text">Only the active guesser can submit the final answer.</p>
+        )}
+
+        {latestGuessResult && (
+          <div className={`result-card ${latestGuessResult.isCorrect ? 'result-success' : 'result-fail'}`}>
+            <strong>{latestGuessResult.isCorrect ? 'Correct guess' : 'Missed guess'}</strong>
+            <p>
+              {latestGuessResult.gameType === 'guess_number'
+                ? `${latestGuessResult.guesserUsername} guessed ${latestGuessResult.guessedNumber}. Hidden number: ${latestGuessResult.targetNumber}.`
+                : `${latestGuessResult.guesserUsername} guessed ${latestGuessResult.guessedName}. Target: ${latestGuessResult.targetName}.`}
+            </p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderPersonGameScreen() {
+    return (
+      <>
         <div className="summary-strip">
           <div>
             <strong>{gameSummary?.players.length || 0}</strong>
@@ -848,39 +1175,23 @@ export default function App() {
                 {isCurrentUserHost && <span className="pill">Host controls</span>}
               </div>
 
-              <p>
-                Host selects a guesser and a mutual contact, then everyone receives live round updates from the shared Socket.io room.
-              </p>
+              <p>Host selects a guesser and a mutual contact, then everyone receives live round updates from the shared room.</p>
 
               <div className="round-controls">
                 <label className="field">
                   <span>Guesser</span>
-                  <select
-                    className="input"
-                    value={selectedGuesserId}
-                    onChange={(event) => setSelectedGuesserId(event.target.value)}
-                    disabled={!isCurrentUserHost || roundIsLive}
-                  >
+                  <select className="input" value={selectedGuesserId} onChange={(event) => setSelectedGuesserId(event.target.value)} disabled={!isCurrentUserHost || roundIsLive}>
                     {playersInGame.map((player) => (
-                      <option key={player.user_id} value={player.user_id}>
-                        {player.username}
-                      </option>
+                      <option key={player.user_id} value={player.user_id}>{player.username}</option>
                     ))}
                   </select>
                 </label>
 
                 <label className="field">
                   <span>Target contact</span>
-                  <select
-                    className="input"
-                    value={selectedTargetName}
-                    onChange={(event) => setSelectedTargetName(event.target.value)}
-                    disabled={!isCurrentUserHost || roundIsLive}
-                  >
+                  <select className="input" value={selectedTargetName} onChange={(event) => setSelectedTargetName(event.target.value)} disabled={!isCurrentUserHost || roundIsLive}>
                     {mutualContactNames.map((contactName) => (
-                      <option key={contactName} value={contactName}>
-                        {contactName}
-                      </option>
+                      <option key={contactName} value={contactName}>{contactName}</option>
                     ))}
                   </select>
                 </label>
@@ -890,9 +1201,7 @@ export default function App() {
                 <button onClick={startRound} className="btn btn-primary" disabled={!isCurrentUserHost || !canLaunchRound}>
                   {activeRound && latestGuessResult ? 'Start Next Round' : 'Start Round'}
                 </button>
-                <button onClick={endGame} className="btn btn-secondary" disabled={!isCurrentUserHost || isBusy}>
-                  End Game
-                </button>
+                <button onClick={endGame} className="btn btn-secondary" disabled={!isCurrentUserHost || isBusy}>End Game</button>
               </div>
             </div>
 
@@ -905,121 +1214,201 @@ export default function App() {
               </div>
 
               <div className={`target-card ${isCurrentUserGuesser ? 'target-card-live' : 'target-card-blurred'}`}>
-                {isCurrentUserGuesser
-                  ? (revealedTargetName || 'Waiting for target delivery...')
-                  : 'Only the guesser sees the target name'}
+                {isCurrentUserGuesser ? (revealedTargetName || 'Waiting for target delivery...') : 'Only the guesser sees the target name'}
               </div>
 
-              {activeRound && (
-                <p className="helper-text">
-                  {activeRound.guesserName} is guessing in round {activeRound.roundNumber}.
-                </p>
-              )}
+              {activeRound && <p className="helper-text">{activeRound.guesserName} is guessing in round {activeRound.roundNumber}.</p>}
             </div>
           </div>
 
           <div className="round-column">
-            <div className="round-card">
-              <div className="panel-heading">
-                <div>
-                  <span className="eyebrow">Questions</span>
-                  <h2>Ask and record answers</h2>
-                </div>
-              </div>
-
-              <QuestionCounter
-                totalQuestions={questionFeed.length}
-                timeLimit={120}
-                onTimeUp={() => setStatusMessage('Round timer expired. Start the next round or end the game.')}
-                isActive={roundIsLive}
-              />
-
-              <label className="field">
-                <span>Question text</span>
-                <input
-                  className="input"
-                  value={questionText}
-                  onChange={(event) => setQuestionText(event.target.value)}
-                  placeholder="Is this person from college?"
-                  disabled={!roundIsLive}
-                />
-              </label>
-
-              <div className="inline-actions compact-actions">
-                <button onClick={() => recordQuestion(true)} className="btn btn-primary" disabled={!roundIsLive || !questionText.trim()}>
-                  Record Yes
-                </button>
-                <button onClick={() => recordQuestion(false)} className="btn btn-secondary" disabled={!roundIsLive || !questionText.trim()}>
-                  Record No
-                </button>
-              </div>
-
-              <div className="question-log">
-                {questionFeed.length === 0 && <p className="helper-text">No questions recorded for this round yet.</p>}
-                {questionFeed.map((entry) => (
-                  <div key={`${entry.questionNumber}-${entry.questionText}`} className="question-item">
-                    <div>
-                      <strong>Q{entry.questionNumber}</strong>
-                      <p>{entry.questionText}</p>
-                    </div>
-                    <div className="question-answer-block">
-                      <span className={`pill ${entry.answer ? 'answer-yes' : 'answer-no'}`}>
-                        {entry.answer ? 'Yes' : 'No'}
-                      </span>
-                      <span className="helper-text">{entry.askerUsername}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="round-card">
-              <div className="panel-heading">
-                <div>
-                  <span className="eyebrow">Guess</span>
-                  <h2>Submit the final name</h2>
-                </div>
-              </div>
-
-              {isCurrentUserGuesser ? (
-                <>
-                  <label className="field">
-                    <span>Your guess</span>
-                    <input
-                      className="input"
-                      value={guessInput}
-                      onChange={(event) => setGuessInput(event.target.value)}
-                      placeholder="Type the contact name"
-                      disabled={!roundIsLive}
-                    />
-                  </label>
-                  <button onClick={submitGuess} className="btn btn-primary" disabled={!roundIsLive || !guessInput.trim() || isBusy}>
-                    Submit Guess
-                  </button>
-                </>
-              ) : (
-                <p className="helper-text">Only the active guesser can submit the final answer.</p>
-              )}
-
-              {latestGuessResult && (
-                <div className={`result-card ${latestGuessResult.isCorrect ? 'result-success' : 'result-fail'}`}>
-                  <strong>{latestGuessResult.isCorrect ? 'Correct guess' : 'Missed guess'}</strong>
-                  <p>
-                    {latestGuessResult.guesserUsername} guessed {latestGuessResult.guessedName}. Target: {latestGuessResult.targetName}.
-                  </p>
-                </div>
-              )}
-            </div>
+            {renderQuestionCard('Is this person from college?')}
+            {renderGuessCard('Type the contact name')}
           </div>
         </div>
 
         <div className="contact-list">
           {mutualContactNames.slice(0, 8).map((contactName) => (
-            <div key={contactName} className="contact-pill">
-              {contactName}
-            </div>
+            <div key={contactName} className="contact-pill">{contactName}</div>
           ))}
         </div>
+      </>
+    );
+  }
+
+  function renderNumberGameScreen() {
+    return (
+      <>
+        <div className="summary-strip">
+          <div>
+            <strong>{gameSummary?.players.length || 0}</strong>
+            <span>Players in match</span>
+          </div>
+          <div>
+            <strong>{activeSuggestions.length}</strong>
+            <span>Funny category prompts loaded</span>
+          </div>
+          <div>
+            <strong>0-10</strong>
+            <span>Hidden number range</span>
+          </div>
+        </div>
+
+        <div className="round-layout">
+          <div className="round-column">
+            <div className="round-card">
+              <div className="panel-heading">
+                <div>
+                  <span className="eyebrow">Round Setup</span>
+                  <h2>{activeRound ? `Round ${activeRound.roundNumber}` : 'Choose the next guesser'}</h2>
+                </div>
+                {isCurrentUserHost && <span className="pill">Host controls</span>}
+              </div>
+
+              <p>The server secretly picks a number between zero and ten. Everyone except the guesser sees it, then the room builds clues around it.</p>
+
+              <div className="round-controls round-controls-single">
+                <label className="field">
+                  <span>Guesser</span>
+                  <select className="input" value={selectedGuesserId} onChange={(event) => setSelectedGuesserId(event.target.value)} disabled={!isCurrentUserHost || roundIsLive}>
+                    {playersInGame.map((player) => (
+                      <option key={player.user_id} value={player.user_id}>{player.username}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="inline-actions compact-actions">
+                <button onClick={startRound} className="btn btn-primary" disabled={!isCurrentUserHost || !canLaunchRound}>
+                  {activeRound && latestGuessResult ? 'Start Next Round' : 'Start Round'}
+                </button>
+                <button onClick={endGame} className="btn btn-secondary" disabled={!isCurrentUserHost || isBusy}>End Game</button>
+              </div>
+            </div>
+
+            <div className="round-card">
+              <div className="panel-heading">
+                <div>
+                  <span className="eyebrow">Secret Number</span>
+                  <h2>{isCurrentUserGuesser ? 'You do not get to see it' : 'Your hidden number for this round'}</h2>
+                </div>
+              </div>
+
+              <div className={`target-card ${!isCurrentUserGuesser && revealedSecretNumber !== null ? 'target-card-live' : 'target-card-blurred'}`}>
+                {!activeRound
+                  ? 'Waiting for the host to start the round'
+                  : isCurrentUserGuesser
+                    ? 'Let the clues steer you'
+                    : revealedSecretNumber !== null
+                      ? revealedSecretNumber
+                      : 'Waiting for the number'}
+              </div>
+
+              <p className="helper-text">
+                {activeRound?.cluePhaseComplete
+                  ? 'All clue givers are done. The guesser can now ask up to three questions and lock in a number.'
+                  : activeRound
+                    ? 'Clues are collected one player at a time so the round stays chaotic but readable.'
+                    : 'Start a round to reveal the number to everyone except the guesser.'}
+              </p>
+            </div>
+
+            <div className="round-card">
+              <div className="panel-heading">
+                <div>
+                  <span className="eyebrow">Clue Desk</span>
+                  <h2>Respond with a category and a clue</h2>
+                </div>
+                {activeRound && <span className="pill">{activeRound.cluePhaseComplete ? 'Clue phase done' : 'Clue phase live'}</span>}
+              </div>
+
+              {isCurrentUserResponder ? (
+                <div className="clue-form">
+                  <label className="field">
+                    <span>Choose a funny category prompt</span>
+                    <div className="suggestion-grid">
+                      {activeSuggestions.map((suggestion) => (
+                        <button
+                          key={suggestion.prompt}
+                          type="button"
+                          className={`suggestion-chip ${selectedPrompt === suggestion.prompt ? 'suggestion-chip-active' : ''}`}
+                          onClick={() => {
+                            setSelectedPrompt(suggestion.prompt);
+                            setCustomPrompt('');
+                          }}
+                        >
+                          <strong>{suggestion.prompt}</strong>
+                          <span>{suggestion.examples.join(' · ')}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </label>
+
+                  <label className="field">
+                    <span>Or type your own category</span>
+                    <input className="input" value={customPrompt} onChange={(event) => setCustomPrompt(event.target.value)} placeholder="Pub, hangover, movie villain, holiday destination..." />
+                  </label>
+
+                  <label className="field">
+                    <span>Your clue</span>
+                    <input className="input" value={clueText} onChange={(event) => setClueText(event.target.value)} placeholder="Ferrari, mid-table, completely cursed..." />
+                  </label>
+
+                  <button onClick={submitNumberClue} className="btn btn-primary" disabled={!canSubmitNumberClue}>
+                    Submit Clue
+                  </button>
+                </div>
+              ) : (
+                <p className="helper-text">
+                  {!activeRound
+                    ? 'Start the round first.'
+                    : activeRound.cluePhaseComplete
+                      ? 'Clue phase is complete.'
+                      : activeRound.activeResponderUserId
+                        ? `${playersInGame.find((player) => player.user_id === activeRound.activeResponderUserId)?.username || 'Another player'} is currently choosing the next clue.`
+                        : 'Waiting for the next clue giver.'}
+                </p>
+              )}
+
+              <div className="question-log">
+                {numberClues.length === 0 && <p className="helper-text">No clues submitted yet.</p>}
+                {numberClues.map((clue) => (
+                  <div key={clue.id} className="question-item clue-item">
+                    <div>
+                      <strong>{clue.prompt_text}</strong>
+                      <p>{clue.clue_text}</p>
+                    </div>
+                    <div className="question-answer-block">
+                      <span className="pill">#{clue.turn_order}</span>
+                      <span className="helper-text">{clue.responder_username}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="round-column">
+            {renderQuestionCard('Is it closer to zero than ten?')}
+            {renderGuessCard('Type a number from 0 to 10')}
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  function renderPlayingScreen() {
+    return (
+      <section className="panel stack-panel play-panel">
+        <div>
+          <span className="eyebrow">Live Match</span>
+          <h2>{getGameLabel(currentGameType)}</h2>
+          <p>{getGameTagline(currentGameType)} This screen is designed to be testable in a narrow mobile browser viewport on this machine.</p>
+        </div>
+
+        {gameSummary?.isTeamMode && displayTeams.length > 0 && <TeamDisplay teams={displayTeams} />}
+
+        {currentGameType === 'guess_number' ? renderNumberGameScreen() : renderPersonGameScreen()}
 
         {finalScores && (
           <div className="round-card">
@@ -1050,11 +1439,12 @@ export default function App() {
 
       <header className="topbar">
         <div>
-          <span className="eyebrow">Multiplayer contact game</span>
-          <h1 className="title">GuessThePerson</h1>
+          <span className="eyebrow">Multiplayer guessing games</span>
+          <h1 className="title">Guess?</h1>
         </div>
         <div className="status-cluster">
           <span className={`connection-pill connection-${connectionState}`}>{connectionState}</span>
+          {currentGameType && <span className="code-pill">{getGameLabel(currentGameType)}</span>}
           {gameCode && <span className="code-pill">Lobby {gameCode}</span>}
         </div>
       </header>
@@ -1065,6 +1455,7 @@ export default function App() {
           {errorMessage && <span className="error-banner">{errorMessage}</span>}
         </section>
 
+        {screen === 'landing' && renderLandingScreen()}
         {screen === 'welcome' && renderWelcomeScreen()}
         {screen === 'profile' && renderProfileScreen()}
         {screen === 'lobby-choice' && renderLobbyChoiceScreen()}
