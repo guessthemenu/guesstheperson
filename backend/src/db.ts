@@ -1,0 +1,135 @@
+import { Pool } from 'pg';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const pool = new Pool({
+  host: process.env.DB_HOST,
+  port: parseInt(process.env.DB_PORT || '5432'),
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+});
+
+pool.on('error', (err: Error) => {
+  console.error('Unexpected database pool error:', err);
+  process.exit(-1);
+});
+
+export async function initDB() {
+  const client = await pool.connect();
+  try {
+    // Create tables
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY,
+        username VARCHAR(255) UNIQUE NOT NULL,
+        avatar_url VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS user_stats (
+        id UUID PRIMARY KEY,
+        user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+        total_games INT DEFAULT 0,
+        wins INT DEFAULT 0,
+        losses INT DEFAULT 0,
+        total_correct_guesses INT DEFAULT 0,
+        total_questions_asked INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS contacts (
+        id UUID PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        phone VARCHAR(20),
+        email VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS games (
+        id UUID PRIMARY KEY,
+        host_id UUID NOT NULL REFERENCES users(id),
+        status VARCHAR(50) DEFAULT 'lobby',
+        is_team_mode BOOLEAN DEFAULT FALSE,
+        total_rounds INT DEFAULT 3,
+        current_round INT DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        started_at TIMESTAMP,
+        ended_at TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS teams (
+        id UUID PRIMARY KEY,
+        game_id UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+        team_name VARCHAR(255),
+        score INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS game_players (
+        id UUID PRIMARY KEY,
+        game_id UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id),
+        team_id UUID REFERENCES teams(id) ON DELETE SET NULL,
+        score INT DEFAULT 0,
+        correct_guesses INT DEFAULT 0,
+        total_turns INT DEFAULT 0,
+        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS game_rounds (
+        id UUID PRIMARY KEY,
+        game_id UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+        round_number INT NOT NULL,
+        target_contact_name VARCHAR(255),
+        guesser_user_id UUID NOT NULL REFERENCES users(id),
+        is_guessed_correctly BOOLEAN DEFAULT FALSE,
+        guessed_as_name VARCHAR(255),
+        total_questions INT DEFAULT 0,
+        started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        ended_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS questions (
+        id UUID PRIMARY KEY,
+        game_round_id UUID NOT NULL REFERENCES game_rounds(id) ON DELETE CASCADE,
+        asker_user_id UUID NOT NULL REFERENCES users(id),
+        question_text VARCHAR(500),
+        answer BOOLEAN,
+        question_number INT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS mutual_contacts (
+        id UUID PRIMARY KEY,
+        game_id UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+        contact_name VARCHAR(255) NOT NULL,
+        user_ids UUID[] NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_contacts_user_id ON contacts(user_id);
+      CREATE INDEX IF NOT EXISTS idx_user_stats_user_id ON user_stats(user_id);
+      CREATE INDEX IF NOT EXISTS idx_game_players_game_id ON game_players(game_id);
+      CREATE INDEX IF NOT EXISTS idx_game_players_user_id ON game_players(user_id);
+      CREATE INDEX IF NOT EXISTS idx_game_players_team_id ON game_players(team_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_game_players_unique_game_user ON game_players(game_id, user_id);
+      CREATE INDEX IF NOT EXISTS idx_teams_game_id ON teams(game_id);
+      CREATE INDEX IF NOT EXISTS idx_mutual_contacts_game_id ON mutual_contacts(game_id);
+      CREATE INDEX IF NOT EXISTS idx_game_rounds_game_id ON game_rounds(game_id);
+      CREATE INDEX IF NOT EXISTS idx_questions_round_id ON questions(game_round_id);
+    `);
+    console.log('✅ Database initialized successfully');
+  } catch (err) {
+    console.error('Error initializing database:', err);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export { pool };

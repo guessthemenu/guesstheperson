@@ -1,0 +1,82 @@
+.question-counter {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  margin-bottom: 2rem;
+}
+
+.counter-display {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+  margin-bottom: 1rem;
+}
+
+.questions-display,
+.timer-display {
+  text-align: center;
+}
+
+.label {
+  font-size: 0.9rem;
+  color: #999;
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.count {
+  font-size: 2.5rem;
+  font-weight: bold;
+  color: #667eea;
+}
+
+.timer {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  margin: 0 auto;
+}
+
+.timer-circle {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.timer-progress {
+  transition: stroke-dasharray 0.3s ease;
+}
+
+.timer-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 1.8rem;
+  font-weight: bold;
+  color: #667eea;
+}
+
+.counter-info {
+  text-align: center;
+  color: #999;
+  font-size: 0.9rem;
+}
+
+@media (max-width: 600px) {
+  .counter-display {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+
+  .timer {
+    width: 100px;
+    height: 100px;
+  }
+
+  .timer-text {
+    font-size: 1.5rem;
+  }
+}

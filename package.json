@@ -1,0 +1,19 @@
+{
+  "name": "guesstheperson",
+  "version": "0.1.0",
+  "description": "Multiplayer Guess Who style game using phone contacts",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "install-all": "npm install",
+    "dev": "npm run dev --workspace=backend & npm run dev --workspace=frontend",
+    "backend:dev": "npm run dev --workspace=backend",
+    "frontend:dev": "npm run dev --workspace=frontend",
+    "backend:build": "npm run build --workspace=backend",
+    "frontend:build": "npm run build --workspace=frontend",
+    "build": "npm run build --workspace=backend && npm run build --workspace=frontend"
+  }
+}
