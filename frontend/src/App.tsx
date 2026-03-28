@@ -5,6 +5,7 @@ import { Share } from '@capacitor/share';
 import { io, Socket } from 'socket.io-client';
 import QRCode from 'qrcode';
 import PlayerProfile from './PlayerProfile';
+import QuestionCounter from './QuestionCounter';
 import TeamDisplay from './TeamDisplay';
 import './App.css';
 
@@ -26,8 +27,8 @@ type LobbyPlayer = {
   score: number;
   team_id?: string | null;
   team_name?: string | null;
-  isHost: boolean;
-  connected: boolean;
+  isHost?: boolean;
+  connected?: boolean;
 };
 
 type LobbyState = {
@@ -52,9 +53,31 @@ type TeamCard = {
 
 type GameStartedPayload = {
   gameId: string;
-  mutualContacts: Array<{ name?: string; contact_name?: string }>;
+  mutualContacts: Array<{ name?: string; contact_name?: string; users?: string[] }>;
   players: LobbyPlayer[];
   isTeamMode: boolean;
+};
+
+type ActiveRound = {
+  roundId: string;
+  roundNumber: number;
+  guesserUserId: string;
+  guesserName: string;
+};
+
+type QuestionEntry = {
+  questionNumber: number;
+  questionText: string;
+  answer: boolean;
+  askerUsername: string;
+};
+
+type GuessResult = {
+  isCorrect: boolean;
+  guessedName: string;
+  targetName: string;
+  guesserUsername: string;
+  roundId: string;
 };
 
 const DEFAULT_API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3000';
@@ -68,6 +91,10 @@ function createInviteUrl(gameId: string) {
   const inviteUrl = new URL(window.location.href);
   inviteUrl.searchParams.set('game', gameId);
   return inviteUrl.toString();
+}
+
+function getMutualContactName(contact?: { name?: string; contact_name?: string }) {
+  return (contact?.contact_name || contact?.name || '').trim();
 }
 
 function mapTeams(players: LobbyPlayer[], teamAssignments: Record<string, string>, useTeamMode: boolean) {
@@ -135,10 +162,27 @@ export default function App() {
   const [shareState, setShareState] = useState('');
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState('');
   const [gameSummary, setGameSummary] = useState<GameStartedPayload | null>(null);
+  const [activeRound, setActiveRound] = useState<ActiveRound | null>(null);
+  const [revealedTargetName, setRevealedTargetName] = useState('');
+  const [selectedGuesserId, setSelectedGuesserId] = useState('');
+  const [selectedTargetName, setSelectedTargetName] = useState('');
+  const [questionText, setQuestionText] = useState('');
+  const [questionFeed, setQuestionFeed] = useState<QuestionEntry[]>([]);
+  const [guessInput, setGuessInput] = useState('');
+  const [latestGuessResult, setLatestGuessResult] = useState<GuessResult | null>(null);
+  const [finalScores, setFinalScores] = useState<LobbyPlayer[] | null>(null);
 
   const inviteUrl = gameCode ? createInviteUrl(gameCode) : '';
   const teams = lobby ? mapTeams(lobby.players, teamAssignments, lobby.isTeamMode) : [];
   const canStartGame = !!lobby && lobby.players.length >= 2 && (!lobby.isTeamMode || Object.keys(teamAssignments).length === lobby.players.length);
+  const playersInGame = gameSummary?.players || lobby?.players || [];
+  const mutualContactNames = (gameSummary?.mutualContacts || [])
+    .map((contact) => getMutualContactName(contact))
+    .filter(Boolean);
+  const isCurrentUserHost = !!userId && !!lobby && lobby.hostId === userId;
+  const isCurrentUserGuesser = !!userId && !!activeRound && activeRound.guesserUserId === userId;
+  const roundIsLive = !!activeRound && !latestGuessResult;
+  const canLaunchRound = !!socket && !!lobby && !!gameSummary && !!selectedGuesserId && !!selectedTargetName && !roundIsLive && !isBusy;
 
   useEffect(() => {
     const nextSocket = io(DEFAULT_API_URL, {
@@ -229,9 +273,57 @@ export default function App() {
 
     const handleGameStarted = (payload: GameStartedPayload) => {
       setGameSummary(payload);
+      setActiveRound(null);
+      setQuestionFeed([]);
+      setGuessInput('');
+      setLatestGuessResult(null);
+      setRevealedTargetName('');
+      setFinalScores(null);
+      setSelectedGuesserId(payload.players[0]?.user_id || '');
+      setSelectedTargetName(getMutualContactName(payload.mutualContacts[0]));
       setScreen('playing');
       setIsBusy(false);
-      setStatusMessage('Match started. The round setup is live and synced for everyone in the room.');
+      setStatusMessage('Match started. Host can configure the first round now.');
+    };
+
+    const handleRoundStarted = (payload: { roundId: string; guesserUserId: string; guesserName: string; roundNumber: number }) => {
+      setActiveRound({
+        roundId: payload.roundId,
+        guesserUserId: payload.guesserUserId,
+        guesserName: payload.guesserName,
+        roundNumber: payload.roundNumber,
+      });
+      setQuestionFeed([]);
+      setLatestGuessResult(null);
+      setGuessInput('');
+      setRevealedTargetName('');
+      setIsBusy(false);
+      setStatusMessage(`Round ${payload.roundNumber} is live. ${payload.guesserName} is the guesser.`);
+    };
+
+    const handleYourTarget = (payload: { targetName: string; roundId: string }) => {
+      setRevealedTargetName(payload.targetName);
+    };
+
+    const handleQuestionAnswered = (payload: QuestionEntry) => {
+      setQuestionFeed((currentFeed) => [...currentFeed, payload]);
+    };
+
+    const handleGuessResult = (payload: GuessResult) => {
+      setLatestGuessResult(payload);
+      setIsBusy(false);
+      setStatusMessage(
+        payload.isCorrect
+          ? `${payload.guesserUsername} guessed correctly: ${payload.targetName}.`
+          : `${payload.guesserUsername} guessed ${payload.guessedName}. The correct answer was ${payload.targetName}.`
+      );
+    };
+
+    const handleGameEnded = (payload: { gameId: string; finalScores: LobbyPlayer[] }) => {
+      setFinalScores(payload.finalScores);
+      setActiveRound(null);
+      setIsBusy(false);
+      setStatusMessage('Game complete. Final scores are ready.');
     };
 
     const handleServerError = (payload: { message?: string }) => {
@@ -246,6 +338,11 @@ export default function App() {
     socket.on('lobby-joined', handleLobbyJoined);
     socket.on('lobby-updated', handleLobbyUpdated);
     socket.on('game-started', handleGameStarted);
+    socket.on('round-started', handleRoundStarted);
+    socket.on('your-target', handleYourTarget);
+    socket.on('question-answered', handleQuestionAnswered);
+    socket.on('guess-result', handleGuessResult);
+    socket.on('game-ended', handleGameEnded);
     socket.on('error', handleServerError);
 
     return () => {
@@ -256,6 +353,11 @@ export default function App() {
       socket.off('lobby-joined', handleLobbyJoined);
       socket.off('lobby-updated', handleLobbyUpdated);
       socket.off('game-started', handleGameStarted);
+      socket.off('round-started', handleRoundStarted);
+      socket.off('your-target', handleYourTarget);
+      socket.off('question-answered', handleQuestionAnswered);
+      socket.off('guess-result', handleGuessResult);
+      socket.off('game-ended', handleGameEnded);
       socket.off('error', handleServerError);
     };
   }, [socket, pendingAction, isTeamMode, totalRounds]);
@@ -421,6 +523,57 @@ export default function App() {
       gameId: lobby.gameId,
       teamAssignments: lobby.isTeamMode ? teamAssignments : undefined,
     });
+  }
+
+  function startRound() {
+    if (!socket || !lobby || !selectedGuesserId || !selectedTargetName) {
+      return;
+    }
+
+    setIsBusy(true);
+    setLatestGuessResult(null);
+    setStatusMessage('Starting the next round and delivering the target to the guesser.');
+    socket.emit('start-round', {
+      gameId: lobby.gameId,
+      targetContact: selectedTargetName,
+      guesserUserId: selectedGuesserId,
+    });
+  }
+
+  function recordQuestion(answer: boolean) {
+    if (!socket || !activeRound || !questionText.trim() || !roundIsLive) {
+      return;
+    }
+
+    socket.emit('ask-question', {
+      roundId: activeRound.roundId,
+      questionNumber: questionFeed.length + 1,
+      questionText: questionText.trim(),
+      answer,
+    });
+    setQuestionText('');
+  }
+
+  function submitGuess() {
+    if (!socket || !activeRound || !lobby || !guessInput.trim() || !roundIsLive) {
+      return;
+    }
+
+    setIsBusy(true);
+    socket.emit('make-guess', {
+      roundId: activeRound.roundId,
+      guess: guessInput.trim(),
+      gameId: lobby.gameId,
+    });
+  }
+
+  function endGame() {
+    if (!socket || !lobby) {
+      return;
+    }
+
+    setIsBusy(true);
+    socket.emit('end-game', { gameId: lobby.gameId });
   }
 
   function renderWelcomeScreen() {
@@ -655,6 +808,8 @@ export default function App() {
   }
 
   function renderPlayingScreen() {
+    const displayTeams = lobby ? mapTeams(playersInGame, teamAssignments, lobby.isTeamMode) : [];
+
     return (
       <section className="panel stack-panel play-panel">
         <div>
@@ -665,7 +820,7 @@ export default function App() {
           </p>
         </div>
 
-        {gameSummary?.isTeamMode && teams.length > 0 && <TeamDisplay teams={teams} />}
+        {gameSummary?.isTeamMode && displayTeams.length > 0 && <TeamDisplay teams={displayTeams} />}
 
         <div className="summary-strip">
           <div>
@@ -682,13 +837,208 @@ export default function App() {
           </div>
         </div>
 
+        <div className="round-layout">
+          <div className="round-column">
+            <div className="round-card">
+              <div className="panel-heading">
+                <div>
+                  <span className="eyebrow">Round Setup</span>
+                  <h2>{activeRound ? `Round ${activeRound.roundNumber}` : 'Choose the next round'}</h2>
+                </div>
+                {isCurrentUserHost && <span className="pill">Host controls</span>}
+              </div>
+
+              <p>
+                Host selects a guesser and a mutual contact, then everyone receives live round updates from the shared Socket.io room.
+              </p>
+
+              <div className="round-controls">
+                <label className="field">
+                  <span>Guesser</span>
+                  <select
+                    className="input"
+                    value={selectedGuesserId}
+                    onChange={(event) => setSelectedGuesserId(event.target.value)}
+                    disabled={!isCurrentUserHost || roundIsLive}
+                  >
+                    {playersInGame.map((player) => (
+                      <option key={player.user_id} value={player.user_id}>
+                        {player.username}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span>Target contact</span>
+                  <select
+                    className="input"
+                    value={selectedTargetName}
+                    onChange={(event) => setSelectedTargetName(event.target.value)}
+                    disabled={!isCurrentUserHost || roundIsLive}
+                  >
+                    {mutualContactNames.map((contactName) => (
+                      <option key={contactName} value={contactName}>
+                        {contactName}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="inline-actions compact-actions">
+                <button onClick={startRound} className="btn btn-primary" disabled={!isCurrentUserHost || !canLaunchRound}>
+                  {activeRound && latestGuessResult ? 'Start Next Round' : 'Start Round'}
+                </button>
+                <button onClick={endGame} className="btn btn-secondary" disabled={!isCurrentUserHost || isBusy}>
+                  End Game
+                </button>
+              </div>
+            </div>
+
+            <div className="round-card">
+              <div className="panel-heading">
+                <div>
+                  <span className="eyebrow">Target View</span>
+                  <h2>{isCurrentUserGuesser ? 'Your hidden target' : 'Guesser target'}</h2>
+                </div>
+              </div>
+
+              <div className={`target-card ${isCurrentUserGuesser ? 'target-card-live' : 'target-card-blurred'}`}>
+                {isCurrentUserGuesser
+                  ? (revealedTargetName || 'Waiting for target delivery...')
+                  : 'Only the guesser sees the target name'}
+              </div>
+
+              {activeRound && (
+                <p className="helper-text">
+                  {activeRound.guesserName} is guessing in round {activeRound.roundNumber}.
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="round-column">
+            <div className="round-card">
+              <div className="panel-heading">
+                <div>
+                  <span className="eyebrow">Questions</span>
+                  <h2>Ask and record answers</h2>
+                </div>
+              </div>
+
+              <QuestionCounter
+                totalQuestions={questionFeed.length}
+                timeLimit={120}
+                onTimeUp={() => setStatusMessage('Round timer expired. Start the next round or end the game.')}
+                isActive={roundIsLive}
+              />
+
+              <label className="field">
+                <span>Question text</span>
+                <input
+                  className="input"
+                  value={questionText}
+                  onChange={(event) => setQuestionText(event.target.value)}
+                  placeholder="Is this person from college?"
+                  disabled={!roundIsLive}
+                />
+              </label>
+
+              <div className="inline-actions compact-actions">
+                <button onClick={() => recordQuestion(true)} className="btn btn-primary" disabled={!roundIsLive || !questionText.trim()}>
+                  Record Yes
+                </button>
+                <button onClick={() => recordQuestion(false)} className="btn btn-secondary" disabled={!roundIsLive || !questionText.trim()}>
+                  Record No
+                </button>
+              </div>
+
+              <div className="question-log">
+                {questionFeed.length === 0 && <p className="helper-text">No questions recorded for this round yet.</p>}
+                {questionFeed.map((entry) => (
+                  <div key={`${entry.questionNumber}-${entry.questionText}`} className="question-item">
+                    <div>
+                      <strong>Q{entry.questionNumber}</strong>
+                      <p>{entry.questionText}</p>
+                    </div>
+                    <div className="question-answer-block">
+                      <span className={`pill ${entry.answer ? 'answer-yes' : 'answer-no'}`}>
+                        {entry.answer ? 'Yes' : 'No'}
+                      </span>
+                      <span className="helper-text">{entry.askerUsername}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="round-card">
+              <div className="panel-heading">
+                <div>
+                  <span className="eyebrow">Guess</span>
+                  <h2>Submit the final name</h2>
+                </div>
+              </div>
+
+              {isCurrentUserGuesser ? (
+                <>
+                  <label className="field">
+                    <span>Your guess</span>
+                    <input
+                      className="input"
+                      value={guessInput}
+                      onChange={(event) => setGuessInput(event.target.value)}
+                      placeholder="Type the contact name"
+                      disabled={!roundIsLive}
+                    />
+                  </label>
+                  <button onClick={submitGuess} className="btn btn-primary" disabled={!roundIsLive || !guessInput.trim() || isBusy}>
+                    Submit Guess
+                  </button>
+                </>
+              ) : (
+                <p className="helper-text">Only the active guesser can submit the final answer.</p>
+              )}
+
+              {latestGuessResult && (
+                <div className={`result-card ${latestGuessResult.isCorrect ? 'result-success' : 'result-fail'}`}>
+                  <strong>{latestGuessResult.isCorrect ? 'Correct guess' : 'Missed guess'}</strong>
+                  <p>
+                    {latestGuessResult.guesserUsername} guessed {latestGuessResult.guessedName}. Target: {latestGuessResult.targetName}.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
         <div className="contact-list">
-          {(gameSummary?.mutualContacts || []).slice(0, 6).map((contact, index) => (
-            <div key={`${contact.contact_name || contact.name || 'contact'}-${index}`} className="contact-pill">
-              {contact.contact_name || contact.name || 'Shared contact'}
+          {mutualContactNames.slice(0, 8).map((contactName) => (
+            <div key={contactName} className="contact-pill">
+              {contactName}
             </div>
           ))}
         </div>
+
+        {finalScores && (
+          <div className="round-card">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">Final Scores</span>
+                <h2>Scoreboard</h2>
+              </div>
+            </div>
+            <div className="score-list">
+              {finalScores.map((player) => (
+                <div key={player.user_id} className="score-row">
+                  <span>{player.username}</span>
+                  <strong>{player.score}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </section>
     );
   }

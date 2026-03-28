@@ -15,7 +15,12 @@ export default function QuestionCounter({
   isActive,
 }: QuestionCounterProps) {
   const [timeRemaining, setTimeRemaining] = useState(timeLimit);
-  const [questionsAsked, setQuestionsAsked] = useState(0);
+
+  useEffect(() => {
+    if (isActive) {
+      setTimeRemaining(timeLimit);
+    }
+  }, [isActive, timeLimit]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -41,7 +46,7 @@ export default function QuestionCounter({
       <div className="counter-display">
         <div className="questions-display">
           <div className="label">Questions Asked</div>
-          <div className="count">{questionsAsked}</div>
+          <div className="count">{totalQuestions}</div>
         </div>
 
         <div className="timer-display">

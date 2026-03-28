@@ -98,6 +98,13 @@ export class GameService {
       targetContactName,
       guesserUserId,
     ]);
+
+    await pool.query(
+      `UPDATE games
+       SET current_round = current_round + 1
+       WHERE id = $1`,
+      [gameId]
+    );
     
     return result.rows[0];
   }
