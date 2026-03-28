@@ -52,6 +52,7 @@ export async function initDB() {
       CREATE TABLE IF NOT EXISTS games (
         id UUID PRIMARY KEY,
         host_id UUID NOT NULL REFERENCES users(id),
+        game_type VARCHAR(50) DEFAULT 'guess_person',
         status VARCHAR(50) DEFAULT 'lobby',
         is_team_mode BOOLEAN DEFAULT FALSE,
         total_rounds INT DEFAULT 3,
@@ -83,6 +84,7 @@ export async function initDB() {
       CREATE TABLE IF NOT EXISTS game_rounds (
         id UUID PRIMARY KEY,
         game_id UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+        game_type VARCHAR(50) DEFAULT 'guess_person',
         round_number INT NOT NULL,
         target_contact_name VARCHAR(255),
         guesser_user_id UUID NOT NULL REFERENCES users(id),
@@ -112,16 +114,51 @@ export async function initDB() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
+      CREATE TABLE IF NOT EXISTS number_rounds (
+        game_round_id UUID PRIMARY KEY REFERENCES game_rounds(id) ON DELETE CASCADE,
+        secret_number INT NOT NULL CHECK (secret_number BETWEEN 0 AND 10),
+        max_questions INT DEFAULT 3,
+        active_responder_index INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS number_round_clues (
+        id UUID PRIMARY KEY,
+        game_round_id UUID NOT NULL REFERENCES game_rounds(id) ON DELETE CASCADE,
+        responder_user_id UUID NOT NULL REFERENCES users(id),
+        prompt_text VARCHAR(255) NOT NULL,
+        clue_text VARCHAR(500) NOT NULL,
+        turn_order INT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (game_round_id, responder_user_id)
+      );
+
+      ALTER TABLE games ADD COLUMN IF NOT EXISTS game_type VARCHAR(50) DEFAULT 'guess_person';
+      ALTER TABLE games ADD COLUMN IF NOT EXISTS is_team_mode BOOLEAN DEFAULT FALSE;
+      ALTER TABLE games ADD COLUMN IF NOT EXISTS total_rounds INT DEFAULT 3;
+      ALTER TABLE games ADD COLUMN IF NOT EXISTS current_round INT DEFAULT 1;
+      ALTER TABLE game_rounds ADD COLUMN IF NOT EXISTS game_type VARCHAR(50) DEFAULT 'guess_person';
+      ALTER TABLE teams ADD COLUMN IF NOT EXISTS game_id UUID REFERENCES games(id) ON DELETE CASCADE;
+      ALTER TABLE teams ADD COLUMN IF NOT EXISTS team_name VARCHAR(255);
+      ALTER TABLE teams ADD COLUMN IF NOT EXISTS score INT DEFAULT 0;
+      ALTER TABLE game_players ADD COLUMN IF NOT EXISTS team_id UUID REFERENCES teams(id) ON DELETE SET NULL;
+      ALTER TABLE game_players ADD COLUMN IF NOT EXISTS score INT DEFAULT 0;
+      ALTER TABLE game_players ADD COLUMN IF NOT EXISTS correct_guesses INT DEFAULT 0;
+      ALTER TABLE game_players ADD COLUMN IF NOT EXISTS total_turns INT DEFAULT 0;
+
       CREATE INDEX IF NOT EXISTS idx_contacts_user_id ON contacts(user_id);
       CREATE INDEX IF NOT EXISTS idx_user_stats_user_id ON user_stats(user_id);
       CREATE INDEX IF NOT EXISTS idx_game_players_game_id ON game_players(game_id);
       CREATE INDEX IF NOT EXISTS idx_game_players_user_id ON game_players(user_id);
       CREATE INDEX IF NOT EXISTS idx_game_players_team_id ON game_players(team_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_game_players_unique_game_user ON game_players(game_id, user_id);
+      CREATE INDEX IF NOT EXISTS idx_games_game_type ON games(game_type);
       CREATE INDEX IF NOT EXISTS idx_teams_game_id ON teams(game_id);
       CREATE INDEX IF NOT EXISTS idx_mutual_contacts_game_id ON mutual_contacts(game_id);
       CREATE INDEX IF NOT EXISTS idx_game_rounds_game_id ON game_rounds(game_id);
+      CREATE INDEX IF NOT EXISTS idx_game_rounds_game_type ON game_rounds(game_type);
       CREATE INDEX IF NOT EXISTS idx_questions_round_id ON questions(game_round_id);
+      CREATE INDEX IF NOT EXISTS idx_number_round_clues_round_id ON number_round_clues(game_round_id);
     `);
     console.log('✅ Database initialized successfully');
   } catch (err) {
