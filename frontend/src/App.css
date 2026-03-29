@@ -366,6 +366,21 @@ select.input { appearance: none; background-image: url("data:image/svg+xml,%3Csv
 .share-box { display: grid; gap: 12px; }
 .share-input { font-size: 0.9rem; }
 .helper-text { margin: 0; color: var(--text-soft); font-size: 0.88rem; }
+.source-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+}
+.source-card strong {
+  display: block;
+  margin-bottom: 4px;
+}
+.source-card p {
+  margin: 0;
+}
 
 /* ── Players ── */
 .player-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 20px; }
@@ -577,7 +592,11 @@ select.input { appearance: none; background-image: url("data:image/svg+xml,%3Csv
 
   .landing-screen-home {
     justify-content: flex-start;
-    padding-top: 24px;
+    padding-top: calc(env(safe-area-inset-top, 0px) + 40px);
+  }
+
+  .landing-screen-mode {
+    padding-top: calc(env(safe-area-inset-top, 0px) + 20px);
   }
 
   .landing-title {
@@ -586,11 +605,6 @@ select.input { appearance: none; background-image: url("data:image/svg+xml,%3Csv
 
   .mode-title {
     font-size: clamp(1.8rem, 9vw, 2.4rem);
-  }
-
-  .landing-subtitle {
-    margin: 0;
-    font-size: 0.92rem;
   }
 
   .landing-choices {

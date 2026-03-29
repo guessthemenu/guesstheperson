@@ -1,7 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from './db';
-import { gameService, GameType } from './gameService';
+import { gameService, GameType, GuessPersonSource } from './gameService';
 
 type ContactInput = {
   name?: string;
@@ -15,6 +15,14 @@ type ContactInput = {
 type CurrentUser = {
   id: string;
   username: string;
+};
+
+type FacebookStatus = {
+  connected: boolean;
+  facebookName: string | null;
+  avatarUrl: string | null;
+  friendCount: number;
+  updatedAt: string | null;
 };
 
 type NumberCategorySuggestion = {
@@ -40,6 +48,10 @@ const NUMBER_CATEGORY_SUGGESTIONS: NumberCategorySuggestion[] = [
 
 function getGameRoom(gameId: string) {
   return `game-${gameId}`;
+}
+
+function normalizePersonSource(source?: string): GuessPersonSource {
+  return source === 'facebook' ? 'facebook' : 'contacts';
 }
 
 function pickRandomItems<T>(items: T[], count: number) {
@@ -121,7 +133,7 @@ function getContactName(contact: ContactInput) {
 
 async function emitLobbyState(io: Server, gameId: string) {
   const gameQuery = `
-    SELECT id, host_id, game_type, is_team_mode, total_rounds, status
+    SELECT id, host_id, game_type, person_source, is_team_mode, total_rounds, status
     FROM games
     WHERE id = $1
   `;
@@ -156,6 +168,7 @@ async function emitLobbyState(io: Server, gameId: string) {
     gameId: game.id,
     hostId: game.host_id,
     gameType: game.game_type,
+    personSource: game.person_source,
     isTeamMode: game.is_team_mode,
     totalRounds: game.total_rounds,
     status: game.status,
@@ -165,7 +178,7 @@ async function emitLobbyState(io: Server, gameId: string) {
 
 async function getGameDetails(gameId: string) {
   const result = await pool.query(
-    `SELECT id, host_id, game_type, is_team_mode, total_rounds, status
+    `SELECT id, host_id, game_type, person_source, is_team_mode, total_rounds, status
      FROM games
      WHERE id = $1`,
     [gameId]
@@ -175,11 +188,67 @@ async function getGameDetails(gameId: string) {
         id: string;
         host_id: string;
         game_type: GameType;
+        person_source: GuessPersonSource;
         is_team_mode: boolean;
         total_rounds: number;
         status: string;
       }
     | undefined;
+}
+
+async function getFacebookStatus(userId: string): Promise<FacebookStatus> {
+  const [accountResult, friendCountResult] = await Promise.all([
+    pool.query(
+      `SELECT facebook_name, avatar_url, updated_at
+       FROM facebook_accounts
+       WHERE user_id = $1`,
+      [userId]
+    ),
+    pool.query(
+      'SELECT COUNT(*)::int AS friend_count FROM facebook_app_friends WHERE user_id = $1',
+      [userId]
+    ),
+  ]);
+
+  const account = accountResult.rows[0];
+
+  return {
+    connected: !!account,
+    facebookName: account?.facebook_name || null,
+    avatarUrl: account?.avatar_url || null,
+    friendCount: friendCountResult.rows[0]?.friend_count || 0,
+    updatedAt: account?.updated_at ? new Date(account.updated_at).toISOString() : null,
+  };
+}
+
+async function getGuessPersonMutuals(playerIds: string[], source: GuessPersonSource) {
+  if (source === 'facebook') {
+    const result = await pool.query(
+      `SELECT u.username AS name, array_agg(DISTINCT ff.user_id) AS users
+       FROM facebook_app_friends ff
+       JOIN users u ON u.id = ff.friend_user_id
+       WHERE ff.user_id = ANY($1)
+       GROUP BY ff.friend_user_id, u.username
+       HAVING COUNT(DISTINCT ff.user_id) > 1
+       ORDER BY RANDOM()
+       LIMIT 10`,
+      [playerIds]
+    );
+    return result.rows as Array<{ name: string; users: string[] }>;
+  }
+
+  const result = await pool.query(
+    `SELECT name, array_agg(DISTINCT user_id) AS users
+     FROM contacts
+     WHERE user_id = ANY($1)
+     GROUP BY name
+     HAVING COUNT(DISTINCT user_id) > 1
+     ORDER BY RANDOM()
+     LIMIT 10`,
+    [playerIds]
+  );
+
+  return result.rows as Array<{ name: string; users: string[] }>;
 }
 
 async function getNumberResponders(gameId: string, guesserUserId: string) {
@@ -215,19 +284,35 @@ export function setupSocketHandlers(io: Server) {
     }
 
     async function replaceContacts(userId: string, contacts: ContactInput[]) {
+      const sanitizedContacts = contacts
+        .map((contact) => ({
+          name: getContactName(contact),
+          phone: getPrimaryPhone(contact),
+          email: getPrimaryEmail(contact),
+        }))
+        .filter((contact) => contact.name);
+
+      if (sanitizedContacts.length === 0) {
+        return;
+      }
+
       await pool.query('DELETE FROM contacts WHERE user_id = $1', [userId]);
 
-      for (const contact of contacts) {
-        const contactName = getContactName(contact);
+      const seenNames = new Set<string>();
 
-        if (!contactName) {
+      for (const contact of sanitizedContacts) {
+        const normalizedName = contact.name.toLowerCase();
+
+        if (seenNames.has(normalizedName)) {
           continue;
         }
+
+        seenNames.add(normalizedName);
 
         await pool.query(
           `INSERT INTO contacts (id, user_id, name, phone, email)
            VALUES ($1, $2, $3, $4, $5)`,
-          [uuidv4(), userId, contactName, getPrimaryPhone(contact), getPrimaryEmail(contact)]
+          [uuidv4(), userId, contact.name, contact.phone, contact.email]
         );
       }
     }
@@ -307,12 +392,15 @@ export function setupSocketHandlers(io: Server) {
     });
 
     // Host creates game
-    socket.on('create-game', async (data: { gameType?: GameType; isTeamMode: boolean; totalRounds: number; playerIds?: string[] }) => {
+    socket.on('create-game', async (data: { gameType?: GameType; personSource?: GuessPersonSource; isTeamMode: boolean; totalRounds: number; playerIds?: string[] }) => {
       try {
         if (!currentUser) throw new Error('User not authenticated');
 
+        const personSource = normalizePersonSource(data.personSource);
+
         const game = await gameService.createGame(currentUser.id, {
           gameType: data.gameType || 'guess_person',
+          personSource,
           isTeamMode: data.isTeamMode,
           totalRounds: data.totalRounds,
           playerIds: data.playerIds || [currentUser.id],
@@ -337,6 +425,7 @@ export function setupSocketHandlers(io: Server) {
           gameId: game.id,
           hostId: currentUser.id,
           gameType: game.game_type,
+          personSource: game.person_source,
           isTeamMode: data.isTeamMode,
         });
 
@@ -377,18 +466,15 @@ export function setupSocketHandlers(io: Server) {
 
         if (game.game_type === 'guess_person') {
           const playerIds = players.map((p) => p.user_id);
-          const query = `
-            SELECT name, array_agg(DISTINCT user_id) as users
-            FROM contacts
-            WHERE user_id = ANY($1)
-            GROUP BY name
-            HAVING COUNT(DISTINCT user_id) > 1
-            ORDER BY RANDOM()
-            LIMIT 10
-          `;
+          mutualContacts = await getGuessPersonMutuals(playerIds, normalizePersonSource(game.person_source));
 
-          const result = await pool.query(query, [playerIds]);
-          mutualContacts = result.rows;
+          if (mutualContacts.length === 0) {
+            throw new Error(
+              game.person_source === 'facebook'
+                ? 'No mutual Facebook friends were found. Ask players to connect Facebook and allow friend access first.'
+                : 'No mutual contacts were found yet. Import or reuse saved contacts before starting.'
+            );
+          }
         } else {
           categorySuggestions = await getMergedCategories(8);
         }
@@ -396,6 +482,7 @@ export function setupSocketHandlers(io: Server) {
         io.to(getGameRoom(data.gameId)).emit('game-started', {
           gameId: data.gameId,
           gameType: game.game_type,
+          personSource: game.person_source,
           mutualContacts,
           categorySuggestions,
           numberRange: { min: 0, max: 10 },

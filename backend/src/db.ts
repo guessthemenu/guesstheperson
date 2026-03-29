@@ -53,6 +53,7 @@ export async function initDB() {
         id UUID PRIMARY KEY,
         host_id UUID NOT NULL REFERENCES users(id),
         game_type VARCHAR(50) DEFAULT 'guess_person',
+        person_source VARCHAR(50) DEFAULT 'contacts',
         status VARCHAR(50) DEFAULT 'lobby',
         is_team_mode BOOLEAN DEFAULT FALSE,
         total_rounds INT DEFAULT 3,
@@ -114,6 +115,24 @@ export async function initDB() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
+      CREATE TABLE IF NOT EXISTS facebook_accounts (
+        user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        facebook_user_id VARCHAR(255) UNIQUE NOT NULL,
+        facebook_name VARCHAR(255),
+        avatar_url TEXT,
+        access_token TEXT,
+        token_expires_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS facebook_app_friends (
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        friend_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, friend_user_id)
+      );
+
       CREATE TABLE IF NOT EXISTS number_rounds (
         game_round_id UUID PRIMARY KEY REFERENCES game_rounds(id) ON DELETE CASCADE,
         secret_number INT NOT NULL CHECK (secret_number BETWEEN 0 AND 10),
@@ -134,6 +153,7 @@ export async function initDB() {
       );
 
       ALTER TABLE games ADD COLUMN IF NOT EXISTS game_type VARCHAR(50) DEFAULT 'guess_person';
+      ALTER TABLE games ADD COLUMN IF NOT EXISTS person_source VARCHAR(50) DEFAULT 'contacts';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(255);
       ALTER TABLE games ADD COLUMN IF NOT EXISTS is_team_mode BOOLEAN DEFAULT FALSE;
       ALTER TABLE games ADD COLUMN IF NOT EXISTS total_rounds INT DEFAULT 3;
@@ -154,8 +174,12 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_game_players_team_id ON game_players(team_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_game_players_unique_game_user ON game_players(game_id, user_id);
       CREATE INDEX IF NOT EXISTS idx_games_game_type ON games(game_type);
+      CREATE INDEX IF NOT EXISTS idx_games_person_source ON games(person_source);
       CREATE INDEX IF NOT EXISTS idx_teams_game_id ON teams(game_id);
       CREATE INDEX IF NOT EXISTS idx_mutual_contacts_game_id ON mutual_contacts(game_id);
+      CREATE INDEX IF NOT EXISTS idx_facebook_accounts_facebook_user_id ON facebook_accounts(facebook_user_id);
+      CREATE INDEX IF NOT EXISTS idx_facebook_app_friends_user_id ON facebook_app_friends(user_id);
+      CREATE INDEX IF NOT EXISTS idx_facebook_app_friends_friend_user_id ON facebook_app_friends(friend_user_id);
       CREATE INDEX IF NOT EXISTS idx_game_rounds_game_id ON game_rounds(game_id);
       CREATE INDEX IF NOT EXISTS idx_game_rounds_game_type ON game_rounds(game_type);
       CREATE INDEX IF NOT EXISTS idx_questions_round_id ON questions(game_round_id);

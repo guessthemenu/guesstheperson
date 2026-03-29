@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { App as CapacitorApp } from '@capacitor/app';
+import { Browser } from '@capacitor/browser';
 import { Contacts } from '@capacitor-community/contacts';
 import { Capacitor } from '@capacitor/core';
 import { Share } from '@capacitor/share';
@@ -10,6 +12,7 @@ import './App.css';
 
 type Screen = 'landing' | 'contact-import' | 'profile' | 'number-mode' | 'lobby-choice' | 'lobby' | 'playing' | 'solo-number';
 type GameType = 'guess_person' | 'guess_number';
+type GuessPersonSource = 'contacts' | 'facebook';
 
 type ContactRecord = {
   name?: string;
@@ -40,6 +43,7 @@ type LobbyState = {
   gameId: string;
   hostId: string;
   gameType: GameType;
+  personSource?: GuessPersonSource;
   isTeamMode: boolean;
   totalRounds: number;
   status: string;
@@ -60,11 +64,20 @@ type TeamCard = {
 type GameStartedPayload = {
   gameId: string;
   gameType: GameType;
+  personSource?: GuessPersonSource;
   mutualContacts: Array<{ name?: string; contact_name?: string; users?: string[] }>;
   categorySuggestions?: NumberCategorySuggestion[];
   numberRange?: { min: number; max: number };
   players: LobbyPlayer[];
   isTeamMode: boolean;
+};
+
+type FacebookStatus = {
+  connected: boolean;
+  facebookName: string | null;
+  avatarUrl: string | null;
+  friendCount: number;
+  updatedAt: string | null;
 };
 
 type ActiveRound = {
@@ -282,6 +295,10 @@ function getGameTagline(gameType: GameType | null) {
     : 'Mutual contacts become the hidden target.';
 }
 
+function getPersonSourceLabel(source: GuessPersonSource) {
+  return source === 'facebook' ? 'Facebook Mutuals' : 'Contacts';
+}
+
 function getMutualContactName(contact?: { name?: string; contact_name?: string }) {
   return (contact?.contact_name || contact?.name || '').trim();
 }
@@ -331,10 +348,13 @@ export default function App() {
   const [statusMessage, setStatusMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [isBusy, setIsBusy] = useState(false);
+  const [isAuthBusy, setIsAuthBusy] = useState(false);
   const [lobby, setLobby] = useState<LobbyState | null>(null);
   const [gameCode, setGameCode] = useState(getInviteCodeFromUrl());
   const [isTeamMode, setIsTeamMode] = useState(true);
   const [totalRounds, setTotalRounds] = useState(3);
+  const [guessPersonSource, setGuessPersonSource] = useState<GuessPersonSource>('contacts');
+  const [facebookStatus, setFacebookStatus] = useState<FacebookStatus | null>(null);
   const [teamAssignments, setTeamAssignments] = useState<Record<string, string>>({});
   const [pendingAction, setPendingAction] = useState<'create' | 'join' | null>(null);
   const pendingActionRef = useRef(pendingAction);
@@ -385,6 +405,61 @@ export default function App() {
     setSocket(nextSocket);
     return () => { nextSocket.disconnect(); };
   }, []);
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (!event.data || event.data.type !== 'facebook-auth') return;
+      setIsAuthBusy(false);
+      if (event.data.status === 'success') {
+        setStatusMessage('Facebook connected.');
+        if (userId) fetchFacebookStatus(userId);
+      } else {
+        setErrorMessage(event.data.message || 'Facebook authentication failed.');
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [userId]);
+
+  useEffect(() => {
+    let removed = false;
+    let listener: { remove: () => Promise<void> } | undefined;
+
+    if (!Capacitor.isNativePlatform()) {
+      return;
+    }
+
+    CapacitorApp.addListener('appUrlOpen', async ({ url }) => {
+      if (!url.startsWith('com.guesstheperson.app://facebook-auth')) return;
+      const parsed = new URL(url);
+      const status = parsed.searchParams.get('status');
+      const message = parsed.searchParams.get('message') || '';
+
+      setIsAuthBusy(false);
+      try {
+        await Browser.close();
+      } catch {
+        // Ignore close errors on platforms that do not support it.
+      }
+
+      if (status === 'success') {
+        setStatusMessage(message || 'Facebook connected.');
+        if (userId && !removed) fetchFacebookStatus(userId);
+      } else {
+        setErrorMessage(message || 'Facebook authentication failed.');
+      }
+    }).then((result) => {
+      listener = result;
+    });
+
+    return () => {
+      removed = true;
+      if (listener) {
+        void listener.remove();
+      }
+    };
+  }, [userId]);
 
   // Socket event handlers
   useEffect(() => {
@@ -439,6 +514,7 @@ export default function App() {
     const handleLobbyUpdated = (payload: LobbyState) => {
       setLobby(payload);
       setSelectedGameType(payload.gameType);
+      if (payload.personSource) setGuessPersonSource(payload.personSource);
       setScreen('lobby');
       setGameCode(payload.gameId);
       setIsBusy(false);
@@ -608,10 +684,24 @@ export default function App() {
   // Auto-create game after user registration
   useEffect(() => {
     if (!socket || !userId || pendingAction !== 'create') return;
-    socket.emit('create-game', { gameType: selectedGameType || 'guess_person', isTeamMode, totalRounds, playerIds: [userId] });
+    socket.emit('create-game', {
+      gameType: selectedGameType || 'guess_person',
+      personSource: selectedGameType === 'guess_person' ? guessPersonSource : 'contacts',
+      isTeamMode,
+      totalRounds,
+      playerIds: [userId],
+    });
     setStatusMessage(`Creating a ${getGameLabel(selectedGameType)} lobby...`);
     setPendingAction(null);
-  }, [socket, userId, pendingAction, selectedGameType, isTeamMode, totalRounds]);
+  }, [socket, userId, pendingAction, selectedGameType, guessPersonSource, isTeamMode, totalRounds]);
+
+  useEffect(() => {
+    if (!userId) {
+      setFacebookStatus(null);
+      return;
+    }
+    fetchFacebookStatus(userId);
+  }, [userId]);
 
   // Poll lobby state while on the lobby screen to catch missed updates
   useEffect(() => {
@@ -636,6 +726,7 @@ export default function App() {
   function chooseGameType(gameType: GameType) {
     setSelectedGameType(gameType);
     setContacts([]);
+    setGuessPersonSource('contacts');
     setErrorMessage('');
     setGameSummary(null);
     setActiveRound(null);
@@ -674,6 +765,12 @@ export default function App() {
     setErrorMessage('');
     setStatusMessage('Requesting contact access...');
     try {
+      const permission = await Contacts.requestPermissions();
+      if (permission.contacts !== 'granted') {
+        setErrorMessage('Contact access was denied. Grant permission in Settings and try again.');
+        return;
+      }
+
       const result = await Contacts.getContacts({ projection: { name: true, phones: true, emails: true } });
       const imported = (result.contacts || []) as ContactRecord[];
       if (imported.length === 0) {
@@ -688,6 +785,68 @@ export default function App() {
       setErrorMessage('Contact access was denied. Grant permission in Settings and try again.');
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  async function fetchFacebookStatus(nextUserId: string) {
+    try {
+      const response = await fetch(`${DEFAULT_API_URL}/api/facebook/status?userId=${encodeURIComponent(nextUserId)}`);
+      if (!response.ok) {
+        throw new Error('Failed to load Facebook status.');
+      }
+      const payload = await response.json() as FacebookStatus;
+      setFacebookStatus(payload);
+    } catch {
+      setFacebookStatus({ connected: false, facebookName: null, avatarUrl: null, friendCount: 0, updatedAt: null });
+    }
+  }
+
+  function registerUserSession() {
+    if (!socket || connectionState !== 'connected') {
+      setErrorMessage('Waiting for server connection.');
+      return;
+    }
+    if (!username.trim()) {
+      setErrorMessage('Enter a player name.');
+      return;
+    }
+
+    setIsBusy(true);
+    setErrorMessage('');
+    setStatusMessage('Saving your player profile...');
+    socket.emit('join-game', {
+      username: username.trim(),
+      contacts: selectedGameType === 'guess_person' ? contacts : [],
+    });
+  }
+
+  async function connectFacebook() {
+    if (!userId) {
+      setErrorMessage('Save your player name first.');
+      return;
+    }
+
+    setIsAuthBusy(true);
+    setErrorMessage('');
+    setStatusMessage('Opening Facebook sign-in...');
+
+    const authUrl = new URL(`${DEFAULT_API_URL}/api/facebook/auth/start`);
+    authUrl.searchParams.set('userId', userId);
+    authUrl.searchParams.set('platform', Capacitor.isNativePlatform() ? 'native' : 'web');
+    authUrl.searchParams.set('origin', window.location.origin);
+
+    try {
+      if (Capacitor.isNativePlatform()) {
+        await Browser.open({ url: authUrl.toString() });
+      } else {
+        const popup = window.open(authUrl.toString(), 'facebook-auth', 'width=520,height=720');
+        if (!popup) {
+          window.location.assign(authUrl.toString());
+        }
+      }
+    } catch {
+      setIsAuthBusy(false);
+      setErrorMessage('Unable to open Facebook sign-in.');
     }
   }
 
@@ -912,9 +1071,22 @@ export default function App() {
         <h2>Add Contacts</h2>
 
         {Capacitor.isNativePlatform() ? (
-          <button onClick={importContacts} className="btn btn-primary" disabled={isBusy}>
-            {isBusy ? 'Importing...' : 'Import Contacts'}
-          </button>
+          <div className="contact-editor">
+            <button onClick={importContacts} className="btn btn-primary" disabled={isBusy}>
+              {isBusy ? 'Importing...' : 'Import Contacts'}
+            </button>
+            <button
+              onClick={() => {
+                setScreen('profile');
+                setStatusMessage('Using any contacts already saved for this player name.');
+              }}
+              className="btn btn-secondary"
+              disabled={isBusy}
+            >
+              Use Saved Contacts
+            </button>
+            <p className="helper-text">Import your phone contacts, or keep using contacts already saved under your player name.</p>
+          </div>
         ) : (
           <div className="contact-editor">
             <label className="field">
@@ -962,7 +1134,6 @@ export default function App() {
       <section className="landing-screen landing-screen-mode">
         <button className="btn-back" onClick={goHome}>&larr; Back</button>
         <h2 className="mode-title">Guess the Number</h2>
-        <p className="landing-subtitle">How do you want to play?</p>
         <div className="landing-choices">
           <button className="landing-card landing-card-solo" onClick={() => {
             setSoloMode(true);
@@ -997,8 +1168,7 @@ export default function App() {
       } else if (joinCode.trim()) {
         registerForLobby('join');
       } else {
-        setScreen('lobby-choice');
-        setStatusMessage('Host a new game or join an existing one.');
+        registerUserSession();
       }
     }
 
@@ -1024,12 +1194,47 @@ export default function App() {
   /* ── Render: Lobby Choice ── */
 
   function renderLobbyChoiceScreen() {
+    const isPersonMode = currentGameType === 'guess_person';
+
     return (
       <section className="panel split-panel screen-panel screen-panel-lobby-choice">
         <div className="card-section">
           <span className="eyebrow">Host {getGameLabel(currentGameType)}</span>
           <h2>Create a new lobby</h2>
           <p>{getGameTagline(currentGameType)}</p>
+          {isPersonMode && (
+            <>
+              <label className="field">
+                <span>Guess the Person source</span>
+                <div className="toggle-row">
+                  <button className={`chip ${guessPersonSource === 'contacts' ? 'chip-active' : ''}`} onClick={() => setGuessPersonSource('contacts')}>Contacts</button>
+                  <button className={`chip ${guessPersonSource === 'facebook' ? 'chip-active' : ''}`} onClick={() => setGuessPersonSource('facebook')}>Facebook Mutuals</button>
+                </div>
+              </label>
+              <div className="source-card">
+                <div>
+                  <strong>{getPersonSourceLabel(guessPersonSource)}</strong>
+                  <p>
+                    {guessPersonSource === 'facebook'
+                      ? 'Targets come from Facebook friends who also use the app and granted friend access.'
+                      : 'Targets come from shared contacts imported or already saved under each player name.'}
+                  </p>
+                </div>
+                {guessPersonSource === 'facebook' && (
+                  <>
+                    <button onClick={connectFacebook} className="btn btn-secondary" disabled={!userId || isAuthBusy}>
+                      {facebookStatus?.connected ? (isAuthBusy ? 'Refreshing...' : 'Reconnect Facebook') : (isAuthBusy ? 'Connecting...' : 'Connect Facebook')}
+                    </button>
+                    <p className="helper-text">
+                      {facebookStatus?.connected
+                        ? `${facebookStatus.facebookName || 'Facebook connected'} with ${facebookStatus.friendCount} app friend${facebookStatus.friendCount === 1 ? '' : 's'} ready.`
+                        : 'Connect Facebook to build a pool from mutual app friends.'}
+                    </p>
+                  </>
+                )}
+              </div>
+            </>
+          )}
           <div className="toggle-row">
             <button className={`chip ${isTeamMode ? 'chip-active' : ''}`} onClick={() => setIsTeamMode(true)}>Team Mode</button>
             <button className={`chip ${!isTeamMode ? 'chip-active' : ''}`} onClick={() => setIsTeamMode(false)}>Free for All</button>
@@ -1089,7 +1294,10 @@ export default function App() {
               <span className="eyebrow">Players</span>
               <h2>{lobby.players.length} in lobby</h2>
             </div>
-            <span className="pill accent-pill">{lobby.isTeamMode ? 'Team mode' : 'Free for all'}</span>
+            <div className="status-cluster">
+              <span className="pill accent-pill">{lobby.isTeamMode ? 'Team mode' : 'Free for all'}</span>
+              {lobby.gameType === 'guess_person' && <span className="pill">{getPersonSourceLabel(lobby.personSource || 'contacts')}</span>}
+            </div>
           </div>
           <div className="player-grid">
             {lobby.players.map((player) => (

@@ -2,11 +2,13 @@ import { pool } from './db';
 import { v4 as uuidv4 } from 'uuid';
 
 export type GameType = 'guess_person' | 'guess_number';
+export type GuessPersonSource = 'contacts' | 'facebook';
 
 export interface GameConfig {
   hostId: string;
   gameId: string;
   gameType: GameType;
+  personSource: GuessPersonSource;
   isTeamMode: boolean;
   totalRounds: number;
   playerIds: string[];
@@ -17,8 +19,8 @@ export class GameService {
   async createGame(hostId: string, config: Partial<GameConfig>) {
     const gameId = uuidv4();
     const query = `
-      INSERT INTO games (id, host_id, is_team_mode, total_rounds, status, game_type)
-      VALUES ($1, $2, $3, $4, 'lobby', $5)
+      INSERT INTO games (id, host_id, is_team_mode, total_rounds, status, game_type, person_source)
+      VALUES ($1, $2, $3, $4, 'lobby', $5, $6)
       RETURNING *;
     `;
     
@@ -28,6 +30,7 @@ export class GameService {
       config.isTeamMode || false,
       config.totalRounds || 3,
       config.gameType || 'guess_person',
+      config.personSource || 'contacts',
     ]);
     
     return result.rows[0];
