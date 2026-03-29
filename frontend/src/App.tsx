@@ -349,7 +349,6 @@ export default function App() {
   const [questionText, setQuestionText] = useState('');
   const [questionFeed, setQuestionFeed] = useState<QuestionEntry[]>([]);
   const [numberClues, setNumberClues] = useState<NumberClue[]>([]);
-  const [selectedPrompt, setSelectedPrompt] = useState('');
   const [customPrompt, setCustomPrompt] = useState('');
   const [clueText, setClueText] = useState('');
   const [guessInput, setGuessInput] = useState('');
@@ -375,10 +374,8 @@ export default function App() {
   const activeSuggestions = activeRound?.suggestedCategories || gameSummary?.categorySuggestions || [];
   const isCurrentUserHost = !!userId && !!lobby && lobby.hostId === userId;
   const isCurrentUserGuesser = !!userId && !!activeRound && activeRound.guesserUserId === userId;
-  const isCurrentUserResponder = !!userId && !!activeRound && activeRound.activeResponderUserId === userId;
   const roundIsLive = !!activeRound && !latestGuessResult;
   const questionLimit = activeRound?.questionLimit || (currentGameType === 'guess_number' ? 3 : 20);
-  const currentPromptValue = customPrompt.trim() || selectedPrompt;
   const canLaunchRound = !!socket && !!lobby && !!gameSummary && !!selectedGuesserId && !roundIsLive && !isBusy && (currentGameType === 'guess_number' || !!selectedTargetName);
   const displayTeams = lobby ? mapTeams(playersInGame, teamAssignments, lobby.isTeamMode) : [];
 
@@ -470,7 +467,6 @@ export default function App() {
       setPlayerScores(payload.players.map(p => ({ user_id: p.user_id, username: p.username, score: p.score || 0 })));
       setSelectedGuesserId(payload.players[0]?.user_id || '');
       setSelectedTargetName(getMutualContactName(payload.mutualContacts[0]));
-      setSelectedPrompt('');
       setCustomPrompt('');
       setClueText('');
       setScreen('playing');
@@ -500,7 +496,6 @@ export default function App() {
       setNumberClues([]);
       setLatestGuessResult(null);
       setGuessInput('');
-      setSelectedPrompt('');
       setCustomPrompt('');
       setClueText('');
       setRevealedTargetName('');
@@ -873,7 +868,7 @@ export default function App() {
 
   function renderLandingScreen() {
     return (
-      <section className="landing-screen">
+      <section className="landing-screen landing-screen-home">
         <h1 className="landing-title">Guess?</h1>
         <div className="landing-choices">
           <button className="landing-card landing-card-menu" onClick={() => window.open('https://www.guessthemenu.com', '_blank', 'noopener,noreferrer')}>
@@ -912,7 +907,7 @@ export default function App() {
 
   function renderContactImportScreen() {
     return (
-      <section className="panel stack-panel">
+      <section className="panel stack-panel screen-panel screen-panel-contact">
         <button className="btn-back" onClick={goHome}>&larr; Back</button>
         <h2>Add Contacts</h2>
 
@@ -964,7 +959,7 @@ export default function App() {
 
   function renderNumberModeScreen() {
     return (
-      <section className="landing-screen">
+      <section className="landing-screen landing-screen-mode">
         <button className="btn-back" onClick={goHome}>&larr; Back</button>
         <h2 className="mode-title">Guess the Number</h2>
         <p className="landing-subtitle">How do you want to play?</p>
@@ -1011,7 +1006,7 @@ export default function App() {
     const backTarget = hasInvite ? 'landing' : (isPersonMode ? 'contact-import' : 'number-mode');
 
     return (
-      <section className="panel stack-panel">
+      <section className="panel stack-panel screen-panel screen-panel-profile">
         <button className="btn-back" onClick={() => setScreen(backTarget)}>&larr; Back</button>
         <div>
           <h2>What's your name?</h2>
@@ -1030,7 +1025,7 @@ export default function App() {
 
   function renderLobbyChoiceScreen() {
     return (
-      <section className="panel split-panel">
+      <section className="panel split-panel screen-panel screen-panel-lobby-choice">
         <div className="card-section">
           <span className="eyebrow">Host {getGameLabel(currentGameType)}</span>
           <h2>Create a new lobby</h2>
@@ -1068,7 +1063,7 @@ export default function App() {
   function renderLobbyScreen() {
     if (!lobby) return null;
     return (
-      <section className="layout-grid">
+      <section className="layout-grid screen-panel screen-panel-lobby">
         <div className="panel invite-panel">
           <div className="panel-heading">
             <div>
@@ -1132,7 +1127,7 @@ export default function App() {
 
   function renderSoloNumberScreen() {
     return (
-      <section className="panel stack-panel solo-panel">
+      <section className="panel stack-panel solo-panel screen-panel screen-panel-solo">
         <button className="btn-back" onClick={goHome}>&larr; New Game</button>
         <div>
           <span className="eyebrow">Solo Mode</span>
@@ -1533,7 +1528,7 @@ export default function App() {
 
   function renderPlayingScreen() {
     return (
-      <section className="panel stack-panel play-panel">
+      <section className="panel stack-panel play-panel screen-panel screen-panel-playing">
         <div>
           <span className="eyebrow">Live Match</span>
           <h2>{getGameLabel(currentGameType)}</h2>

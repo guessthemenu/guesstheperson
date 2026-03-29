@@ -1,21 +1,22 @@
 .player-profile {
-  background: rgba(255, 251, 244, 0.92);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 20px;
-  padding: 1rem;
-  box-shadow: 0 18px 40px rgba(62, 39, 12, 0.08);
+  padding: 0.9rem;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
   transition: all 0.3s ease;
 }
 
 .player-profile.current-player {
   border: 2px solid rgba(225, 112, 45, 0.45);
-  background: linear-gradient(135deg, rgba(225, 112, 45, 0.08) 0%, rgba(47, 125, 88, 0.08) 100%);
+  background: linear-gradient(135deg, rgba(225, 112, 45, 0.1) 0%, rgba(255, 255, 255, 0.04) 100%);
 }
 
 .profile-header {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
+  gap: 0.85rem;
+  margin-bottom: 0.8rem;
 }
 
 .avatar {
@@ -49,7 +50,7 @@
 
 .username {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text);
   word-break: break-word;
@@ -73,15 +74,15 @@
 .stats-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 1rem;
+  gap: 0.65rem;
 }
 
 .stat {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 0.75rem;
-  background: rgba(24, 54, 38, 0.06);
+  padding: 0.6rem;
+  background: rgba(255, 255, 255, 0.04);
   border-radius: 8px;
 }
 
@@ -94,7 +95,7 @@
 }
 
 .stat-value {
-  font-size: 1.4rem;
+  font-size: 1.2rem;
   font-weight: bold;
   color: var(--accent-dark);
 }
@@ -120,18 +121,50 @@
 
 @media (max-width: 600px) {
   .player-profile {
-    padding: 0.75rem;
+    padding: 0.7rem;
+  }
+
+  .profile-header {
+    gap: 0.7rem;
+    margin-bottom: 0.65rem;
+  }
+
+  .avatar {
+    width: 42px;
+    height: 42px;
+  }
+
+  .avatar-placeholder {
+    font-size: 1.2rem;
+  }
+
+  .username {
+    font-size: 0.92rem;
+  }
+
+  .badge {
+    padding: 0.18rem 0.45rem;
+    font-size: 0.62rem;
   }
 
   .stats-grid {
     grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
   }
 
   .stat {
-    padding: 0.5rem;
+    padding: 0.45rem;
+  }
+
+  .stat-label {
+    font-size: 0.68rem;
   }
 
   .stat-value {
-    font-size: 1.2rem;
+    font-size: 1rem;
+  }
+
+  .quick-stats {
+    font-size: 0.78rem;
   }
 }
